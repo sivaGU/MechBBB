@@ -25,11 +25,6 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdDepictor
-from rdkit.Chem import Draw
-try:
-    from rdkit.Chem.Draw import rdMolDraw2D
-except Exception:
-    rdMolDraw2D = None
 
 from src.mechbbb.predict import predict_single, predict_batch, load_predictor
 from similarity_module import compute_similarity, similarity_flag, compute_morgan
@@ -228,31 +223,29 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
             # Some molecules cannot be kekulized; continue with aromatic form.
             pass
 
-        if rdMolDraw2D is not None:
-            drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
-            draw_options = drawer.drawOptions()
-            draw_options.padding = 0.05
-            draw_options.bondLineWidth = 2.0
-            draw_options.fixedBondLength = 28
-            draw_options.minFontSize = 14
-            draw_options.maxFontSize = 32
-            draw_options.addStereoAnnotation = False
+        # Lazy import drawing modules to avoid app startup crashes on
+        # Streamlit Cloud environments with partial RDKit builds.
+        try:
+            from rdkit.Chem.Draw import rdMolDraw2D
+        except Exception:
+            rdMolDraw2D = None
 
-            rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol_to_draw)
-            drawer.FinishDrawing()
-            png_bytes = drawer.GetDrawingText()
-            return bytes(png_bytes) if png_bytes else None
-
-        # Fallback for RDKit builds without rdMolDraw2D.
-        img = Draw.MolToImage(mol_to_draw, size=(size, size), kekulize=True, wedgeBonds=True)
-        if img is None:
+        if rdMolDraw2D is None:
             return None
-        buf = io.BytesIO()
-        if hasattr(img, "mode") and img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return buf.getvalue()
+
+        drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+        draw_options = drawer.drawOptions()
+        draw_options.padding = 0.05
+        draw_options.bondLineWidth = 2.0
+        draw_options.fixedBondLength = 28
+        draw_options.minFontSize = 14
+        draw_options.maxFontSize = 32
+        draw_options.addStereoAnnotation = False
+
+        rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol_to_draw)
+        drawer.FinishDrawing()
+        png_bytes = drawer.GetDrawingText()
+        return bytes(png_bytes) if png_bytes else None
     except Exception:
         return None
 
@@ -835,7 +828,7 @@ def render_mechbbb_prediction_page():
                     else:
                         st.info("Training fingerprints not available. Similarity analysis disabled.")
 
-                    # Ligand structure: always render with RDKit for a consistent, clean style.
+                    # Ligand structure: prefer RDKit clean draw; fallback to CACTUS image.
                     st.subheader("Ligand Structure")
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
                     file_content = st.session_state.get("structure_file_content")
@@ -846,11 +839,15 @@ def render_mechbbb_prediction_page():
                         file_extension=file_ext,
                     )
                     img_bytes = render_ligand_structure(mol) if mol else None
+                    source_label = "RDKit clean depiction"
+                    if img_bytes is None and smiles_for_lookup:
+                        img_bytes = fetch_structure_image_from_database(smiles_for_lookup)
+                        source_label = "NCI CACTUS fallback"
                     if img_bytes:
                         st.session_state.last_ligand_image = img_bytes
                         st.session_state.last_ligand_smiles = result.canonical_smiles
                         st.image(io.BytesIO(img_bytes), use_container_width=False, width=400)
-                        st.caption("2D structure · RDKit clean depiction")
+                        st.caption(f"2D structure · {source_label}")
                     else:
                         st.warning(
                             "Could not retrieve or draw structure for this molecule."

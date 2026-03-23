@@ -7,6 +7,7 @@
 3. Configure:
    - **Main file path:** `streamlit_app.py`
    - **Python version:** 3.9 or 3.10
+   - **Recommended:** keep `runtime.txt` in repo root (`python-3.10.14`) so Cloud pins a compatible interpreter
 4. Deploy. The app will use the `artifacts/` directory in the repo.
 
 ## Important
