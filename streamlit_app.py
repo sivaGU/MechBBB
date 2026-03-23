@@ -24,7 +24,6 @@ import pandas as pd
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
-from rdkit.Chem import rdDepictor
 
 from src.mechbbb.predict import predict_single, predict_batch, load_predictor
 from similarity_module import compute_similarity, similarity_flag, compute_morgan
@@ -205,49 +204,12 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
     """
     if mol is None:
         return None
-    try:
-        mol_to_draw = Chem.Mol(mol)
-
-        # Force high-quality 2D coordinates for consistent, clean depictions.
-        try:
-            rdDepictor.SetPreferCoordGen(True)
-            if mol_to_draw.GetNumConformers() > 0:
-                mol_to_draw.RemoveAllConformers()
-            rdDepictor.Compute2DCoords(mol_to_draw)
-        except Exception:
-            pass
-
-        try:
-            Chem.Kekulize(mol_to_draw, clearAromaticFlags=False)
-        except Exception:
-            # Some molecules cannot be kekulized; continue with aromatic form.
-            pass
-
-        # Lazy import drawing modules to avoid app startup crashes on
-        # Streamlit Cloud environments with partial RDKit builds.
-        try:
-            from rdkit.Chem.Draw import rdMolDraw2D
-        except Exception:
-            rdMolDraw2D = None
-
-        if rdMolDraw2D is None:
-            return None
-
-        drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
-        draw_options = drawer.drawOptions()
-        draw_options.padding = 0.05
-        draw_options.bondLineWidth = 2.0
-        draw_options.fixedBondLength = 28
-        draw_options.minFontSize = 14
-        draw_options.maxFontSize = 32
-        draw_options.addStereoAnnotation = False
-
-        rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol_to_draw)
-        drawer.FinishDrawing()
-        png_bytes = drawer.GetDrawingText()
-        return bytes(png_bytes) if png_bytes else None
-    except Exception:
-        return None
+    # Streamlit Cloud images rely on system libs (e.g., libXrender) for RDKit
+    # drawing in some environments. Avoid hard dependency here and use
+    # external image fallback in the caller when this returns None.
+    _ = mol
+    _ = size
+    return None
 
 
 # ============================================================================
