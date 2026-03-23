@@ -25,7 +25,11 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdDepictor
-from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Chem import Draw
+try:
+    from rdkit.Chem.Draw import rdMolDraw2D
+except Exception:
+    rdMolDraw2D = None
 
 from src.mechbbb.predict import predict_single, predict_batch, load_predictor
 from similarity_module import compute_similarity, similarity_flag, compute_morgan
@@ -224,19 +228,31 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
             # Some molecules cannot be kekulized; continue with aromatic form.
             pass
 
-        drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
-        draw_options = drawer.drawOptions()
-        draw_options.padding = 0.05
-        draw_options.bondLineWidth = 2.0
-        draw_options.fixedBondLength = 28
-        draw_options.minFontSize = 14
-        draw_options.maxFontSize = 32
-        draw_options.addStereoAnnotation = False
+        if rdMolDraw2D is not None:
+            drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+            draw_options = drawer.drawOptions()
+            draw_options.padding = 0.05
+            draw_options.bondLineWidth = 2.0
+            draw_options.fixedBondLength = 28
+            draw_options.minFontSize = 14
+            draw_options.maxFontSize = 32
+            draw_options.addStereoAnnotation = False
 
-        rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol_to_draw)
-        drawer.FinishDrawing()
-        png_bytes = drawer.GetDrawingText()
-        return bytes(png_bytes) if png_bytes else None
+            rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol_to_draw)
+            drawer.FinishDrawing()
+            png_bytes = drawer.GetDrawingText()
+            return bytes(png_bytes) if png_bytes else None
+
+        # Fallback for RDKit builds without rdMolDraw2D.
+        img = Draw.MolToImage(mol_to_draw, size=(size, size), kekulize=True, wedgeBonds=True)
+        if img is None:
+            return None
+        buf = io.BytesIO()
+        if hasattr(img, "mode") and img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf.getvalue()
     except Exception:
         return None
 
