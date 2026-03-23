@@ -644,6 +644,17 @@ def render_mechbbb_prediction_page():
         **Input modes:** Single SMILES or structure file | Batch (CSV with smiles/SMILES column)
         """
     )
+    st.subheader("Ligand Structure")
+    preview_img = st.session_state.get("last_ligand_image")
+    preview_smiles = st.session_state.get("last_ligand_smiles")
+    if preview_img:
+        st.image(io.BytesIO(preview_img), use_container_width=False, width=400)
+        st.caption(
+            "Latest ligand preview"
+            + (f" · SMILES: `{preview_smiles}`" if preview_smiles else "")
+        )
+    else:
+        st.info("Ligand preview will appear here after a valid single-molecule prediction.")
 
     try:
         predictor = get_predictor()
@@ -790,8 +801,7 @@ def render_mechbbb_prediction_page():
                     else:
                         st.info("Training fingerprints not available. Similarity analysis disabled.")
 
-                    # Ligand structure: prefer RDKit clean draw; fallback to CACTUS image.
-                    st.subheader("Ligand Structure")
+                    # Ligand structure preview is shown above the input controls.
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
                     file_content = st.session_state.get("structure_file_content")
                     file_ext = st.session_state.get("structure_file_ext")
@@ -808,8 +818,7 @@ def render_mechbbb_prediction_page():
                     if img_bytes:
                         st.session_state.last_ligand_image = img_bytes
                         st.session_state.last_ligand_smiles = result.canonical_smiles
-                        st.image(io.BytesIO(img_bytes), use_container_width=False, width=400)
-                        st.caption(f"2D structure · {source_label}")
+                        st.info("Ligand preview updated above.")
                     else:
                         st.warning(
                             "Could not retrieve or draw structure for this molecule."
