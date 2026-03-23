@@ -1,5 +1,5 @@
 """
-MechBBB-ML Streamlit GUI. Two-stage mechanistically augmented BBB permeability classifier (Model C).
+GPCR Class A Functional Activity Prediction Streamlit GUI.
 
 Run from this folder (project root):
   streamlit run streamlit_app.py
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# Ensure project root (this folder) is on path for src.mechbbb
+# Ensure project root (this folder) is on path for src.gpcr
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -21,13 +21,20 @@ import urllib.request
 import urllib.parse
 import streamlit as st
 import pandas as pd
-import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from src.mechbbb.predict import predict_single, predict_batch, load_predictor
-from similarity_module import compute_similarity, similarity_flag, compute_morgan
-from demo_ligands import CNS_PENETRATING_LIGANDS, NON_CNS_PENETRATING_LIGANDS
+from src.gpcr.predict import (
+    predict_single,
+    predict_batch,
+    load_predictor,
+    get_available_receptors,
+)
+
+# Data paths for demo tool
+DATA_DIR = PROJECT_ROOT / "data"
+RECEPTORS_FILE = DATA_DIR / "gpcr_class_a_receptors.txt"
+DEMO_REFERENCE_FILE = DATA_DIR / "demo_reference.csv"
 
 
 def extract_smiles_from_file(file_content: bytes, file_extension: str) -> Optional[str]:
@@ -94,54 +101,6 @@ def extract_smiles_from_file(file_content: bytes, file_extension: str) -> Option
     return None
 
 
-def get_mol_with_3d(smiles: str, file_content: Optional[bytes] = None, file_extension: Optional[str] = None):
-    """
-    Get an RDKit mol with 3D coordinates for visualization.
-    Uses uploaded file coords if present, else generates 3D from SMILES.
-    Returns Chem.Mol or None.
-    """
-    mol = None
-    if file_content is not None and file_extension is not None:
-        ext = file_extension.lower()
-        try:
-            text = file_content.decode("utf-8")
-            if ext == ".sdf":
-                from io import StringIO
-                supplier = Chem.SDMolSupplier(StringIO(text))
-                mols = [m for m in supplier if m is not None]
-                for m in mols:
-                    if m.GetNumConformers() > 0:
-                        mol = m
-                        break
-                else:
-                    mol = mols[0] if mols else None
-            elif ext == ".mol":
-                mol = Chem.MolFromMolBlock(text)
-            elif ext in (".pdb", ".pdbqt"):
-                mol = Chem.MolFromPDBBlock(text)
-            elif ext == ".mol2":
-                mol = Chem.MolFromMol2Block(text)
-            if mol is not None and mol.GetNumConformers() == 0:
-                smiles = Chem.MolToSmiles(mol, canonical=True)
-                mol = None
-        except Exception:
-            mol = None
-    if mol is None and smiles:
-        mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    if mol.GetNumConformers() == 0:
-        try:
-            AllChem.EmbedMolecule(mol, AllChem.ETKDG())
-            AllChem.MMFFOptimizeMolecule(mol)
-        except Exception:
-            try:
-                AllChem.EmbedMolecule(mol, randomSeed=42)
-            except Exception:
-                return None
-    return mol
-
-
 def fetch_structure_image_from_database(smiles: str, width: int = 400, height: int = 400) -> Optional[bytes]:
     """
     Fetch a 2D structure image for the given SMILES from the NCI CACTUS
@@ -155,7 +114,7 @@ def fetch_structure_image_from_database(smiles: str, width: int = 400, height: i
             f"https://cactus.nci.nih.gov/chemical/structure/{encoded}/image"
             f"?width={width}&height={height}&format=png"
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "MechBBB-ML-GUI/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "GPCR-GUI/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status != 200:
                 return None
@@ -228,234 +187,56 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
 # ============================================================================
 
 st.set_page_config(
-    page_title="MechBBB-ML - BBB Permeability Studio",
+    page_title="GPCR Class A Functional Activity Prediction",
     page_icon=None,
     layout="wide",
     menu_items={
-        "Report a bug": "https://github.com/your-org/mechbbb-gui/issues",
-        "About": "Two-stage mechanistically augmented BBB permeability classifier (Model C).",
+        "About": "GPCR Class A Functional Activity Prediction GUI - Predicts Agonist/Antagonist/Inactive for receptor-ligand pairs.",
     },
 )
 
-# Inject custom CSS for color palette - blue-teal scale
+# Inject custom CSS - clean dark hero + card layout
 st.markdown("""
 <style>
-    /* Blue-teal palette: light powder -> midnight azure */
-    :root {
-        --light-powder-blue: #E0F4F8;
-        --soft-sky-blue: #B3E5F0;
-        --light-azure: #80D4E8;
-        --medium-steel-blue: #4DB8D0;
-        --deep-cerulean: #2A9DB5;
-        --rich-teal-blue: #1E7A8C;
-        --midnight-azure: #0D4F5C;
-    }
-    
-    .stApp {
-        background-color: #ffffff;
-    }
-    
-    section.main,
-    .main,
-    [data-testid="stAppViewContainer"] > div:not([data-testid="stSidebar"]) {
-        background-color: #ffffff !important;
-    }
-    
-    div[data-testid="stAppViewContainer"] > div > div:not([data-testid="stSidebar"]) {
-        background-color: #ffffff !important;
-    }
-    
+    :root { --bg: #f5f8fc; --card: #ffffff; --ink: #0f172a; --brand: #0891b2; --brand2: #2563eb; }
+    .stApp { background: var(--bg); color: var(--ink); }
     .main .block-container,
     section.main .block-container {
-        background-color: #ffffff !important;
-        padding: 2rem 3rem;
-        margin: 2rem auto;
-        max-width: 1400px;
-        border-radius: 8px;
-        box-shadow: 0 2px 12px rgba(13, 79, 92, 0.08);
+        background: transparent !important;
+        padding: 1.5rem 2rem 3rem 2rem;
+        max-width: 1300px;
     }
-    
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0D4F5C 0%, #0A3D47 100%);
-        color: #ffffff;
-        min-width: 200px !important;
-        max-width: 280px !important;
-        width: 280px !important;
+        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+        color: #f8fafc;
+        width: 300px !important;
     }
-    
-    [data-testid="stSidebar"][aria-expanded="true"] > div:first-child {
-        width: 280px !important;
-        min-width: 200px !important;
-        max-width: 280px !important;
-    }
-    
-    [data-testid="stSidebar"] .css-1d391kg {
-        background-color: #0A3D47;
-    }
-    
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] li, [data-testid="stSidebar"] h3 { color: #e2e8f0 !important; }
     .stButton > button {
-        background: linear-gradient(135deg, #4DB8D0 0%, #2A9DB5 100%);
-        color: white;
+        background: linear-gradient(90deg, var(--brand), var(--brand2));
+        color: #fff;
         border: none;
-        border-radius: 6px;
+        border-radius: 10px;
         font-weight: 600;
-        box-shadow: 0 2px 4px rgba(77, 184, 208, 0.35);
-        transition: all 0.3s ease;
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.2);
     }
-    
-    .stButton > button:hover {
-        background: linear-gradient(135deg, #2A9DB5 0%, #1E7A8C 100%);
-        box-shadow: 0 4px 8px rgba(42, 157, 181, 0.4);
-        transform: translateY(-1px);
+    .hero {
+        background: radial-gradient(circle at 20% 20%, #1d4ed8 0%, #0f172a 60%);
+        color: #e2e8f0;
+        padding: 1.6rem 1.8rem;
+        border-radius: 16px;
+        margin-bottom: 1.2rem;
+        box-shadow: 0 10px 24px rgba(2, 6, 23, 0.25);
     }
-    
-    .stButton > button:focus {
-        background: linear-gradient(135deg, #1E7A8C 0%, #0D4F5C 100%);
-        box-shadow: 0 0 0 0.3rem rgba(77, 184, 208, 0.35);
-    }
-    
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #2A9DB5 0%, #1E7A8C 100%);
-        color: white;
-        border-radius: 6px;
-        font-weight: 500;
-    }
-    
-    .stDownloadButton > button:hover {
-        background: linear-gradient(135deg, #1E7A8C 0%, #0D4F5C 100%);
-    }
-    
-    h1, h2, h3 {
-        color: #1E7A8C;
-        font-weight: 700;
-    }
-    
-    a {
-        color: #1E7A8C;
-        text-decoration: none;
-    }
-    
-    a:hover {
-        color: #2A9DB5;
-        text-decoration: underline;
-    }
-    
-    [data-testid="stMetricValue"] {
-        color: #1E7A8C;
-        font-weight: 600;
-    }
-    
-    .stSuccess {
-        background: linear-gradient(90deg, #E0F4F8 0%, #B3E5F0 100%);
-        border-left: 4px solid #4DB8D0;
-        color: #1a1a1a;
-        border-radius: 4px;
-    }
-    
-    .stInfo {
-        background: linear-gradient(90deg, #E0F4F8 0%, #B3E5F0 100%);
-        border-left: 4px solid #4DB8D0;
-        color: #1a1a1a;
-        border-radius: 4px;
-    }
-    
-    .stWarning {
-        background: linear-gradient(90deg, #B3E5F0 0%, #80D4E8 100%);
-        border-left: 4px solid #2A9DB5;
-        color: #1a1a1a;
-        border-radius: 4px;
-    }
-    
-    .stError {
-        background: linear-gradient(90deg, #B3E5F0 0%, #80D4E8 100%);
-        border-left: 4px solid #1E7A8C;
-        color: #1a1a1a;
-        border-radius: 4px;
-    }
-    
-    .stRadio > label,
-    .stSelectbox > label,
-    .stTextInput > label,
-    .stSlider > label,
-    .stFileUploader > label {
-        color: #1E7A8C;
-        font-weight: 500;
-    }
-    
-    .streamlit-expanderHeader {
-        background: linear-gradient(90deg, #E0F4F8 0%, #B3E5F0 100%);
-        color: #1E7A8C;
-        border-radius: 4px;
-        font-weight: 500;
-    }
-    
-    .streamlit-expanderHeader:hover {
-        background: linear-gradient(90deg, #B3E5F0 0%, #80D4E8 100%);
-    }
-    
-    .stDataFrame {
-        border: 2px solid #4DB8D0;
-        border-radius: 4px;
-    }
-    
-    hr {
-        border-color: #4DB8D0;
-        border-width: 2px;
-    }
-    
-    .stSlider .stSlider > div > div {
-        background-color: #4DB8D0;
-    }
-    
-    [data-testid="stSidebar"] .stButton {
-        margin-bottom: 0.5rem;
-    }
-    
-    [data-testid="stSidebar"] .stButton > button {
-        width: 100%;
-        padding: 0.75rem 1rem;
-        font-size: 1rem;
-        text-align: center;
-        margin-bottom: 0.5rem;
-        background: linear-gradient(135deg, #2A9DB5 0%, #1E7A8C 100%) !important;
-        color: white !important;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
-    
-    [data-testid="stSidebar"] .stButton > button:hover {
-        background: linear-gradient(135deg, #1E7A8C 0%, #0D4F5C 100%) !important;
-    }
-    
-    [data-testid="stSidebar"] h3 {
-        color: #ffffff;
-        font-weight: 600;
-        margin-top: 0;
-        margin-bottom: 0.5rem;
-    }
-    
-    [data-testid="stSidebar"] p, [data-testid="stSidebar"] li {
-        color: rgba(255, 255, 255, 0.9);
-    }
-    
-    [data-testid="stSidebar"] .stSuccess {
-        background: linear-gradient(90deg, rgba(77, 184, 208, 0.3) 0%, rgba(42, 157, 181, 0.25) 100%);
-        border-left: 4px solid #4DB8D0;
-        color: #ffffff;
-    }
-    
-    [data-testid="stSidebar"] .stInfo {
-        background: linear-gradient(90deg, rgba(77, 184, 208, 0.25) 0%, rgba(42, 157, 181, 0.2) 100%);
-        border-left: 4px solid #4DB8D0;
-        color: #ffffff;
-    }
-    
-    [data-testid="stSidebar"] hr {
-        margin: 1rem 0;
-        border-color: rgba(255, 255, 255, 0.25);
-    }
-    
-    .main .block-container > div {
-        background-color: #ffffff;
+    .hero h2 { color: #f8fafc; margin-bottom: 0.4rem; }
+    .hero p { margin: 0; color: #cbd5e1; }
+    .card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 0.8rem 1rem;
+        margin-bottom: 0.8rem;
+        box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -465,42 +246,13 @@ st.markdown("""
 # ============================================================================
 
 @st.cache_resource
-def get_predictor():
-    return load_predictor(HANDOFF_DIR)
-
-
-@st.cache_resource
-def get_train_fps():
-    """Load training fingerprints for similarity computation."""
-    train_fps_path = HANDOFF_DIR / "artifacts" / "train_fps.npz"
-    if not train_fps_path.exists():
-        # Try alternative location
-        train_fps_path = HANDOFF_DIR / "train_fps.npz"
-    if train_fps_path.exists():
-        return np.load(train_fps_path)["fp"]
-    return None
-
-
-def compute_ecfp4_fingerprint(smiles: str) -> Optional[np.ndarray]:
-    """
-    Compute ECFP4 fingerprint (Morgan radius=2, n_bits=2048) for a single SMILES.
-    Returns 1D array of shape (2048,) with dtype uint8 (0/1), or None if invalid.
-    """
+def get_predictor(model_type: Optional[str] = None):
+    """Load predictor; for demo tool pass model_type in ('rf', 'lightgbm', 'xgboost')."""
     try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-        arr = np.zeros(2048, dtype=np.uint8)
-        for j in range(2048):
-            if fp.GetBit(j):
-                arr[j] = 1
-        return arr
-    except Exception:
-        return None
-
-
-DEFAULT_THRESHOLD = 0.35
+        return load_predictor(HANDOFF_DIR, model_type=model_type)
+    except TypeError:
+        # Backward compatibility: older load_predictor() may not accept model_type
+        return load_predictor(HANDOFF_DIR)
 
 # ============================================================================
 # PAGES
@@ -508,39 +260,50 @@ DEFAULT_THRESHOLD = 0.35
 
 def render_home_page():
     """Render the home/dashboard page."""
-    st.title("MechBBB-ML - Blood-Brain Barrier Permeability Studio")
+    st.markdown(
+        """
+        <div class="hero">
+          <h2>GPCR Class A Functional Activity</h2>
+          <p>Manuscript-aligned ligand + receptor + interaction feature inference with a streamlined screening workflow.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("GPCR Class A Functional Activity Prediction")
     st.caption(
-        "Two-stage mechanistically augmented BBB permeability classifier (Model C)."
+        "Machine learning-based prediction of Agonist/Antagonist/Inactive activity for GPCR Class A receptor-ligand pairs."
     )
 
     st.sidebar.markdown("### Project Snapshot")
     st.sidebar.markdown(
         """
-        - **Model focus:** BBB permeability classification (Model C)
-        - **Architecture:** Stage-1 (efflux/influx/PAMPA) + Stage-2 (PhysChem+ECFP+mech)
-        - **Threshold:** 0.35 (MCC-optimal on BBBP validation)
-        - **Status:** All pages available
+        - **Model focus:** GPCR Class A functional activity
+        - **Classes:** Agonist, Antagonist, Inactive
+        - **Features:** Ligand (PhysChem + ECFP) + Receptor (31) + Interaction (14)
+        - **Models:** LightGBM, Random Forest, XGBoost (ensemble)
+        - **Status:** Ready for ML artifact upload
         """
     )
-    st.sidebar.success("Interactive ligand screening available!")
+    st.sidebar.success("Upload your trained models to get started!")
 
     st.markdown(
         """
         ## Why this app exists
-        Drug discovery teams struggle to predict whether small molecules cross the blood-brain barrier.
-        MechBBB-ML (Model C) is a two-stage mechanistically augmented classifier that first predicts
-        auxiliary ADME properties (efflux, influx, PAMPA) and then combines them with physicochemical
-        and fingerprint features to predict BBB permeability. This approach improves both
-        external generalization and interpretability.
+        Drug discovery teams need to predict the functional activity of ligands binding to GPCR Class A receptors.
+        This GUI provides a user-friendly interface for predicting whether a ligand acts as an **Agonist**, **Antagonist**, 
+        or is **Inactive** for a given GPCR Class A receptor. The model uses machine learning approaches including
+        LightGBM, Random Forest, and XGBoost to make predictions with uncertainty quantification.
         """
     )
 
     st.markdown(
         """
         ### Model highlights
-        - **Stage-1:** LightGBM models trained on auxiliary mechanistic datasets (BBBP excluded) yield p_efflux, p_influx, p_pampa.
-        - **Stage-2:** Model C = PhysChem + ECFP4 + mechanistic probs; ensemble of 5 seeds; threshold 0.35.
-        - **No tuning on external data:** threshold selected on BBBP validation set only.
+        - **Multi-class classification:** Predicts Agonist (class 0), Antagonist (class 1), or Inactive (class 2)
+        - **Feature engineering:** Combines ligand physicochemical properties, ECFP fingerprints, receptor features, and interaction terms
+        - **Ensemble support:** Works with multiple model seeds for robust predictions
+        - **Uncertainty quantification:** Provides error probabilities and confidence intervals
+        - **Evaluation regimes:** Supports baseline, random stratified, scaffold split, and LORO (Leave-One-Receptor-Out) evaluation
         """
     )
 
@@ -549,7 +312,7 @@ def render_home_page():
     st.markdown("## Quick start")
 
     st.info(
-        "**Ready to predict!** Use the **MechBBB-ML Prediction** page in the sidebar to enter SMILES strings or upload a CSV file and get BBB permeability predictions with mechanistic probabilities."
+        "**Ready to predict!** Use **GPCR Ligand Functional Activity Prediction** for single or batch predictions."
     )
 
     st.markdown(
@@ -558,7 +321,7 @@ def render_home_page():
         ### Navigation
         - **Home:** This overview
         - **Documentation:** Setup, model details, and usage
-        - **MechBBB-ML Prediction:** Run predictions (SMILES, structure files, or Batch CSV)
+        - **GPCR Ligand Functional Activity Prediction:** Run predictions (receptor + ligand)
         """
     )
 
@@ -566,13 +329,13 @@ def render_home_page():
 def render_documentation_page():
     """Render the documentation page."""
     st.title("Documentation & Runbook")
-    st.caption("Reference material for the MechBBB-ML Model C classifier.")
+    st.caption("Reference material for the GPCR Class A Functional Activity Prediction GUI.")
 
     st.markdown(
         """
         ## Purpose
-        This application provides a Streamlit interface for the MechBBB-ML two-stage mechanistically augmented
-        BBB permeability classifier (Model C). It supports single SMILES input, structure file upload (SDF, MOL, PDB, PDBQT, MOL2), and batch CSV processing.
+        This application provides a Streamlit interface for predicting GPCR Class A receptor-ligand functional activity.
+        It supports single predictions (receptor name + ligand SMILES/structure file) and batch CSV processing.
         """
     )
 
@@ -583,16 +346,15 @@ def render_documentation_page():
         .
         ├── streamlit_app.py       # Main application
         ├── requirements.txt      # Dependencies
-        ├── src/mechbbb/          # Prediction module
+        ├── src/gpcr/             # Prediction module
         │   ├── predict.py        # predict_single, predict_batch, load_predictor
-        │   └── cli.py            # Command-line interface
-        ├── similarity_module.py  # ECFP4 Tanimoto similarity computation
-        └── artifacts/            # Model artifacts
-            └── train_fps.npz      # Training fingerprints (for applicability domain warnings)
-            ├── stage1_efflux.joblib, stage1_influx.joblib, stage1_pampa.joblib
-            ├── stage2_modelC/    # model_seed0.pkl through model_seed4.pkl
-            ├── threshold.json
-            └── feature_config.json
+        │   └── cli.py           # Command-line interface
+        └── artifacts/            # Model artifacts (add your models here)
+            ├── model_seed0.pkl (or .joblib)
+            ├── model_seed1.pkl
+            ├── ...
+            ├── feature_config.json
+            └── threshold.json (optional)
         ```
         """
     )
@@ -602,18 +364,40 @@ def render_documentation_page():
         ## Local setup
         1. Create and activate a virtual environment (conda, venv, or poetry).
         2. Install dependencies: `pip install -r requirements.txt`.
-        3. Launch the app: `streamlit run streamlit_app.py`.
-        4. Streamlit will open at `http://localhost:8501`. Use the sidebar to switch between pages.
+        3. Ensure `GPCRtryagain - Delete - Copy` is available (or set `GPCR_DATA_ROOT`).
+        4. **Add your trained ML models** to the `artifacts/` folder (see below).
+        5. Launch the app: `streamlit run streamlit_app.py`.
+        6. Streamlit will open at `http://localhost:8501`. Use the sidebar to switch between pages.
         """
     )
 
     st.markdown(
         """
-        ## Model overview (Model C)
-        - **Stage-1:** LightGBM models on PhysChem + ECFP4 yield p_efflux, p_influx, p_pampa.
-        - **Stage-2:** 5-model ensemble on PhysChem + ECFP4 + mechanistic probs yields P(BBB+).
-        - **Threshold:** 0.35 (MCC-optimal on BBBP validation set).
-        - **Features:** 10 physicochemical descriptors + 2048-bit ECFP4 + 3 mechanistic probabilities = 2061 total.
+        ## Model overview
+        - **Classes:** Agonist (0), Antagonist (1), Inactive (2)
+        - **Features:** 
+          - Ligand: 10 physicochemical descriptors + 2048-bit ECFP4 = 2058 features
+          - Receptor: 31 pocket features from `Josh_Receptor_Features`
+          - Interaction: 14 manuscript-style ligand × receptor terms
+          - **Total: 2103 features**
+        - **Models:** Ensemble of LightGBM, Random Forest, or XGBoost models
+        - **Evaluation:** Baseline, Random Stratified, Scaffold Split, LORO
+        """
+    )
+
+    st.markdown(
+        """
+        ## Adding your ML artifacts
+        
+        Place your trained model files in the `artifacts/` folder:
+        - `model_seed0.pkl` (or `.joblib`)
+        - `model_seed1.pkl`
+        - `model_seed2.pkl`
+        - ... (as many seeds as you have)
+        
+        Optionally create:
+        - `feature_config.json`: Feature configuration (class names, etc.)
+        - `threshold.json`: Classification thresholds (if applicable)
         """
     )
 
@@ -621,9 +405,9 @@ def render_documentation_page():
         """
         ## Uncertainty Quantification
         The model provides uncertainty estimates for each prediction:
-        - **Standard Error:** Calculated from the variance across the 5-model ensemble (std_dev / √5).
-        - **95% Confidence Interval:** P(BBB+) ± 2×SE, providing a range within which the true probability likely falls.
-        - **Display:** Single predictions show the error range and confidence interval. Batch CSV outputs include columns for standard error, error percentage, and CI bounds.
+        - **Standard Error:** Calculated from the variance across the ensemble models (std_dev / √n).
+        - **95% Confidence Interval:** Probability ± 2×SE, providing a range within which the true probability likely falls.
+        - **Display:** Single predictions show probability distributions and confidence intervals. Batch CSV outputs include columns for standard error and CI bounds.
         """
     )
 
@@ -632,81 +416,220 @@ def render_documentation_page():
         ## CLI usage
         From the project folder:
         ```bash
-        python -m src.mechbbb.cli --smiles "CCO" "c1ccccc1" --output out.csv
-        python -m src.mechbbb.cli --input example_inputs.csv --output out.csv
+        python -m src.gpcr.cli --receptor "ADRB2" --ligand "CCO" --output out.csv
+        python -m src.gpcr.cli --input example_inputs.csv --output out.csv
         ```
-        Output columns: smiles, canonical_smiles, prob_BBB+, prob_std_error, prob_std_error_pct, prob_CI_lower, prob_CI_upper, BBB_class, p_efflux, p_influx, p_pampa, threshold, error, max_similarity, similarity_flag.
-        
-        **Applicability Domain Warning:** The GUI computes the maximum ECFP4 Tanimoto similarity between each query molecule and the BBBP training set fingerprints. A warning is displayed when the maximum similarity is below 0.30, indicating limited similarity to the training chemistry under this fingerprint metric. This requires `artifacts/train_fps.npz` to be present (see artifact_requirements.md for how to generate it).
+        Output columns: receptor, ligand_smiles, canonical_smiles, predicted_class, class_id, prob_agonist, prob_antagonist, prob_inactive, prob_std_error, error.
         """
     )
 
-    st.success("Questions? Contact: Dr. Sivanesan Dakshanamurthy (sd233@georgetown.edu)")
+    st.success("Questions? Refer to the ML GPCR Class A Functional Activity Manuscript for model details.")
 
 
-def render_mechbbb_prediction_page():
-    """Render the MechBBB-ML prediction page."""
-    st.title("BBB Permeability Prediction")
-    st.markdown(
-        """
-        Predict BBB permeability using MechBBB-ML (Model C). Enter a SMILES string, upload a structure file (SDF, MOL, PDB, PDBQT, MOL2), or upload a CSV file for batch processing.
-        The model outputs P(BBB+), mechanistic probabilities (p_efflux, p_influx, p_pampa), and classification.
-        
-        **Input modes:** Single SMILES or structure file | Batch (CSV with smiles/SMILES column)
-        """
-    )
-
+def _load_receptor_list():
+    """Load receptor names from GPCRtryagain features folder, fallback to local text file."""
+    external = get_available_receptors()
+    if external:
+        return external
+    if not RECEPTORS_FILE.exists():
+        return []
     try:
-        predictor = get_predictor()
-    except Exception as e:
-        st.error(f"Could not load model: {e}")
-        st.info(
-            "Ensure the **artifacts/** folder contains:\n"
-            "- stage1_efflux.joblib, stage1_influx.joblib, stage1_pampa.joblib\n"
-            "- stage2_modelC/ with model_seed0.pkl through model_seed4.pkl\n"
-            "- threshold.json\n"
-            "- train_fps.npz (for applicability domain warnings; see artifact_requirements.md)"
+        lines = RECEPTORS_FILE.read_text(encoding="utf-8").strip().splitlines()
+        return [s.strip() for s in lines if s.strip()]
+    except Exception:
+        return []
+
+
+def _load_demo_reference():
+    """Load demo reference data (receptor, ligand, experimental_class) for comparison table."""
+    if not DEMO_REFERENCE_FILE.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(DEMO_REFERENCE_FILE, encoding="utf-8")
+    except pd.errors.ParserError:
+        df = pd.read_csv(DEMO_REFERENCE_FILE, encoding="utf-8", engine="python", on_bad_lines="skip")
+    return df
+
+
+def render_demo_prediction_page():
+    """Render the Demo Prediction Tool page: predicted vs experimental comparison table."""
+    st.title("Demo Prediction Tool")
+    st.caption(
+        "Compare model predictions to experimental values (Agonist / Antagonist / Inactive) "
+        "using Random Forest, LightGBM, XGBoost, or Ensemble."
+    )
+
+    ref_df = _load_demo_reference()
+    if ref_df.empty or "smiles" not in ref_df.columns or "experimental_class" not in ref_df.columns:
+        st.warning(
+            "Demo reference data not found or missing columns. Add data/demo_reference.csv with columns: "
+            "receptor, name, smiles, experimental_class (Agonist/Antagonist/Inactive)."
         )
         return
 
-    st.sidebar.markdown("### Settings")
-    threshold = st.sidebar.slider(
-        "Classification threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01
+    st.sidebar.markdown("### Demo settings")
+    model_type_label = st.sidebar.selectbox(
+        "Model",
+        options=["Random Forest", "LightGBM", "XGBoost", "Ensemble"],
+        index=0,
+        key="demo_model",
     )
+    model_type_map = {"Random Forest": "rf", "LightGBM": "lightgbm", "XGBoost": "xgboost", "Ensemble": "ensemble"}
+    model_type = model_type_map[model_type_label]
+
+    try:
+        predictor = get_predictor(model_type)
+    except Exception as e:
+        st.error(f"Could not load {model_type_label} model: {e}")
+        st.info(
+            "Ensure artifacts/demo_rf, demo_lightgbm, demo_xgboost, and/or demo_ensemble exist with model_seed*.pkl."
+        )
+        return
+
+    # Run predictions for all reference rows
+    pairs = [(str(row["receptor"]), str(row["smiles"])) for _, row in ref_df.iterrows()]
+    with st.spinner(f"Running {model_type_label} on {len(ref_df)} reference compounds..."):
+        results = predict_batch(pairs, predictor=predictor)
+
+    # Build comparison table: experimental vs predicted
+    out = ref_df[["receptor", "name", "smiles", "experimental_class"]].copy()
+    out["predicted_class"] = [r.predicted_class for r in results]
+    out["P(Agonist)"] = [round(r.prob_agonist, 4) for r in results]
+    out["P(Antagonist)"] = [round(r.prob_antagonist, 4) for r in results]
+    out["P(Inactive)"] = [round(r.prob_inactive, 4) for r in results]
+    out["match"] = [
+        "✓" if str(row["experimental_class"]).strip().lower() == str(row["predicted_class"]).strip().lower() else "✗"
+        for _, row in out.iterrows()
+    ]
+    out = out.rename(columns={"match": "Match"})
+
+    st.markdown(f"**Model:** {model_type_label} · **Reference compounds:** {len(ref_df)}")
+
+    # Summary metrics
+    n_match = out["Match"].eq("✓").sum()
+    accuracy = n_match / len(out) * 100 if len(out) else 0
+    st.metric("Agreement with experiment", f"{n_match} / {len(out)} ({accuracy:.1f}%)")
+
+    st.subheader("Predicted vs experimental")
+    st.dataframe(
+        out[
+            [
+                "receptor",
+                "name",
+                "experimental_class",
+                "predicted_class",
+                "P(Agonist)",
+                "P(Antagonist)",
+                "P(Inactive)",
+                "Match",
+            ]
+        ],
+        use_container_width=True,
+        height=400,
+    )
+    st.download_button(
+        "Download comparison (CSV)",
+        out.to_csv(index=False),
+        f"demo_predicted_vs_experimental_{model_type}.csv",
+        "text/csv",
+        key="demo_download",
+    )
+
+
+def render_gpcr_prediction_page():
+    """Render the GPCR Ligand Functional Activity Prediction page."""
+    st.markdown(
+        """
+        <div class="hero">
+          <h2>Screen Ligands Against Class A GPCRs</h2>
+          <p>Select a receptor, provide SMILES or upload structural files, and get Agonist/Antagonist/Inactive probabilities.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("GPCR Ligand Functional Activity Prediction")
+    st.markdown(
+        """
+        Predict GPCR Class A receptor-ligand functional activity. Choose a model, select a receptor and provide a ligand (SMILES or structure file),
+        or upload a CSV file for batch processing. The model outputs probabilities for Agonist, Antagonist, and Inactive classes.
+        
+        **Input modes:** Single receptor-ligand pair | Batch (CSV with receptor and ligand columns)
+        """
+    )
+
+    st.markdown("#### Select model")
+    model_type_label = st.selectbox(
+        "Model type",
+        ["Random Forest", "LightGBM", "XGBoost", "Ensemble"],
+        key="gpcr_pred_model",
+        help="Select which trained model to use for predictions.",
+    )
+    st.caption("Choose **Random Forest**, **LightGBM**, **XGBoost**, or **Ensemble** for predictions.")
+    model_type_map = {"Random Forest": "rf", "LightGBM": "lightgbm", "XGBoost": "xgboost", "Ensemble": "ensemble"}
+    model_type = model_type_map[model_type_label]
+
+    try:
+        predictor = get_predictor(model_type)
+    except Exception as e:
+        st.error(f"Could not load {model_type_label} model: {e}")
+        st.info(
+            "Ensure the **artifacts/** folder contains demo subfolders (e.g. **artifacts/demo_rf/**) with:\n"
+            "- Model files (model_seed*.pkl or model_seed*.joblib)\n"
+            "- feature_config.json\n"
+            "- threshold.json"
+        )
+        return
+
+    st.sidebar.markdown("### Model Info")
     st.sidebar.info(
-        "**MechBBB-ML (Model C)** Default threshold 0.35 = MCC-optimal on BBBP validation."
+        f"**Model:** {model_type_label}\n\n"
+        f"**Loaded:** {len(predictor.models)} model(s)\n\n"
+        f"**Classes:** {', '.join(predictor.class_names)}"
     )
 
     st.divider()
 
     input_mode = st.radio(
         "Input mode",
-        ["Single SMILES or structure file", "Batch (CSV)"],
+        ["Single receptor-ligand pair", "Batch (CSV)"],
         horizontal=True,
         key="input_mode",
     )
 
-    if input_mode == "Single SMILES or structure file":
-        smiles_input = st.text_input(
-            "SMILES (or upload a structure file below)",
+    if input_mode == "Single receptor-ligand pair":
+        receptors = _load_receptor_list()
+        if not receptors:
+            st.warning("GPCR Class A receptor list not found (data/gpcr_class_a_receptors.txt). Add it to enable receptor selection.")
+        receptor_options = ["Select receptor..."] + (receptors if receptors else [])
+        receptor_input = st.selectbox(
+            "GPCR Class A Receptor",
+            options=receptor_options,
+            key="receptor_input",
+            help="Select the receptor to predict functional activity for.",
+        )
+        receptor_selected = receptor_input if (receptor_input and receptor_input != "Select receptor...") else ""
+
+        ligand_input = st.text_input(
+            "Ligand SMILES (or upload a structure file below)",
             placeholder="e.g. CCO, c1ccccc1",
-            key="smiles_input",
+            key="ligand_input",
         )
-        st.markdown("**Or upload a structure file:**")
+        
+        st.markdown("**Or upload a ligand structure file:**")
         structure_file = st.file_uploader(
-            "Upload structure file",
-            type=["sdf", "mol", "pdb", "pdbqt", "mol2"],
+            "Upload ligand structure file",
+            type=["sdf", "mol", "pdb", "pdbqt", "mol2", "csv"],
             key="structure_upload",
-            help="Supported: SDF, MOL, PDB, PDBQT, MOL2. First molecule will be used.",
+            help="Supported: SDF, MOL, PDB, PDBQT, MOL2, CSV (first smiles row).",
         )
-        smiles_to_use = None
+        
+        ligand_to_use = None
         if structure_file:
             content = structure_file.read()
             ext = os.path.splitext(structure_file.name)[1]
             extracted = extract_smiles_from_file(content, ext)
             if extracted:
-                smiles_to_use = extracted
-                # Store for 3D viewer (use uploaded structure if it has 3D coords)
+                ligand_to_use = extracted
                 st.session_state.structure_file_content = content
                 st.session_state.structure_file_ext = ext
                 st.success(f"Extracted SMILES from {structure_file.name}")
@@ -714,41 +637,61 @@ def render_mechbbb_prediction_page():
                 st.session_state.structure_file_content = None
                 st.session_state.structure_file_ext = None
                 st.error(f"Could not extract SMILES from {ext.upper()} file. Try SMILES input instead.")
-        elif smiles_input and smiles_input.strip():
-            smiles_to_use = smiles_input.strip()
+        elif ligand_input and ligand_input.strip():
+            ligand_to_use = ligand_input.strip()
             st.session_state.structure_file_content = None
             st.session_state.structure_file_ext = None
+        
         if st.button("Predict", type="primary", key="btn_single"):
-            if smiles_to_use:
+            if receptor_selected and ligand_to_use:
                 result = predict_single(
-                    smiles_to_use,
-                    threshold=threshold,
+                    receptor_selected,
+                    ligand_to_use,
                     predictor=predictor,
                 )
                 if result.is_valid:
-                    st.success("Valid SMILES")
+                    st.success("Valid input")
+                    
+                    # Main prediction
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        # Display P(BBB+) with error range
-                        if result.prob_std_error is not None:
-                            error_pct = result.prob_std_error * 100
-                            # Use 2*SE for ~95% confidence interval
-                            ci_lower = max(0.0, result.prob - 2 * result.prob_std_error)
-                            ci_upper = min(1.0, result.prob + 2 * result.prob_std_error)
-                            st.metric(
-                                "P(BBB+)", 
-                                f"{result.prob:.4f}",
-                                help=f"95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]"
-                            )
-                            st.caption(f"± {error_pct:.2f}% (std error)")
-                        else:
-                            st.metric("P(BBB+)", f"{result.prob:.4f}")
+                        st.metric("Predicted Class", result.predicted_class)
                     with col2:
-                        st.metric("Prediction", result.bbb_class)
+                        st.metric("Receptor", result.receptor)
                     with col3:
-                        st.metric("Threshold", f"{threshold:.2f}")
-
-                    # Display confidence interval details
+                        st.metric("Class ID", result.class_id)
+                    
+                    # Probability distributions
+                    st.subheader("Probability Distributions")
+                    prob_col1, prob_col2, prob_col3 = st.columns(3)
+                    with prob_col1:
+                        st.metric("P(Agonist)", f"{result.prob_agonist:.4f}")
+                    with prob_col2:
+                        st.metric("P(Antagonist)", f"{result.prob_antagonist:.4f}")
+                    with prob_col3:
+                        st.metric("P(Inactive)", f"{result.prob_inactive:.4f}")
+                    
+                    # Visualize probabilities
+                    import plotly.graph_objects as go
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=['Agonist', 'Antagonist', 'Inactive'],
+                            y=[result.prob_agonist, result.prob_antagonist, result.prob_inactive],
+                            marker_color=['#7E57C2', '#673AB7', '#512DA8'],
+                            text=[f'{result.prob_agonist:.3f}', f'{result.prob_antagonist:.3f}', f'{result.prob_inactive:.3f}'],
+                            textposition='auto',
+                        )
+                    ])
+                    fig.update_layout(
+                        title="Class Probability Distribution",
+                        xaxis_title="Class",
+                        yaxis_title="Probability",
+                        yaxis_range=[0, 1],
+                        height=400,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Uncertainty analysis
                     if result.prob_std_error is not None:
                         st.markdown("#### Uncertainty Analysis")
                         err_col1, err_col2, err_col3 = st.columns(3)
@@ -756,54 +699,20 @@ def render_mechbbb_prediction_page():
                             error_pct = result.prob_std_error * 100
                             st.metric("Standard Error", f"± {error_pct:.2f}%")
                         with err_col2:
-                            ci_lower = max(0.0, result.prob - 2 * result.prob_std_error)
+                            prob_max = max(result.prob_agonist, result.prob_antagonist, result.prob_inactive)
+                            ci_lower = max(0.0, prob_max - 2 * result.prob_std_error)
                             st.metric("95% CI Lower", f"{ci_lower:.4f}")
                         with err_col3:
-                            ci_upper = min(1.0, result.prob + 2 * result.prob_std_error)
+                            ci_upper = min(1.0, prob_max + 2 * result.prob_std_error)
                             st.metric("95% CI Upper", f"{ci_upper:.4f}")
                         st.info(
-                            f"**Prediction Range:** P(BBB+) = {result.prob:.4f} ± {result.prob_std_error:.4f} "
+                            f"**Prediction Range:** Highest probability = {prob_max:.4f} ± {result.prob_std_error:.4f} "
                             f"(95% confidence interval: [{ci_lower:.4f}, {ci_upper:.4f}])"
                         )
-
-                    st.subheader("Mechanistic probabilities")
-                    mcol1, mcol2, mcol3 = st.columns(3)
-                    with mcol1:
-                        st.metric("p_efflux", f"{result.p_efflux:.4f}")
-                    with mcol2:
-                        st.metric("p_influx", f"{result.p_influx:.4f}")
-                    with mcol3:
-                        st.metric("p_pampa", f"{result.p_pampa:.4f}")
-
-                    # Applicability domain: ECFP4 Tanimoto similarity to training set
-                    train_fps = get_train_fps()
-                    if train_fps is not None:
-                        query_fp = compute_ecfp4_fingerprint(result.canonical_smiles)
-                        if query_fp is not None:
-                            max_similarity = compute_similarity(query_fp, train_fps)
-                            sim_flag = similarity_flag(max_similarity)
-                            
-                            st.subheader("Applicability Domain")
-                            simcol1, simcol2 = st.columns(2)
-                            with simcol1:
-                                st.metric("Max Similarity (ECFP4 Tanimoto)", f"{max_similarity:.4f}")
-                            with simcol2:
-                                st.metric("Similarity Flag", sim_flag)
-                            
-                            # Show warning if similarity is low
-                            if sim_flag == "low":
-                                st.warning(
-                                    "⚠️ **Low similarity to training set** (similarity < 0.3). "
-                                    "Predictions may be unreliable for this molecule."
-                                )
-                        else:
-                            st.info("Could not compute fingerprint for similarity analysis.")
-                    else:
-                        st.info("Training fingerprints not available. Similarity analysis disabled.")
-
-                    # Ligand structure: fetch 2D image from database (CACTUS), fallback to RDKit
+                    
+                    # Ligand structure visualization
                     st.subheader("Ligand Structure")
-                    smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
+                    smiles_for_lookup = (result.canonical_smiles or result.ligand_smiles or "").strip()
                     img_bytes = fetch_structure_image_from_database(smiles_for_lookup) if smiles_for_lookup else None
                     source_label = "NCI CACTUS Chemical Structure Resolver"
                     if img_bytes is None:
@@ -817,8 +726,6 @@ def render_mechbbb_prediction_page():
                         img_bytes = render_ligand_structure(mol) if mol else None
                         source_label = "RDKit (database lookup unavailable)"
                     if img_bytes:
-                        st.session_state.last_ligand_image = img_bytes
-                        st.session_state.last_ligand_smiles = result.canonical_smiles
                         st.image(io.BytesIO(img_bytes), use_container_width=False, width=400)
                         st.caption(f"2D structure · Source: {source_label}")
                     else:
@@ -829,7 +736,7 @@ def render_mechbbb_prediction_page():
                 else:
                     st.error(result.error)
             else:
-                st.warning("Please enter a SMILES string or upload a structure file (SDF, MOL, PDB, PDBQT, MOL2).")
+                st.warning("Please select a GPCR Class A receptor and provide ligand SMILES or upload a structure file.")
 
     else:
         uploaded_file = st.file_uploader(
@@ -839,85 +746,40 @@ def render_mechbbb_prediction_page():
         )
         if uploaded_file:
             df = pd.read_csv(uploaded_file)
-            col = next(
-                (
-                    c
-                    for c in df.columns
-                    if c.lower() in ("smiles", "canonical_smiles", "smi") or c == "SMILES"
-                ),
-                None,
+            receptor_col = next(
+                (c for c in df.columns if c.lower() in ("receptor", "receptor_name", "gpcr")),
+                None
             )
-            if col is None:
-                st.error("CSV must have a SMILES column (smiles, SMILES, canonical_smiles, or smi).")
+            ligand_col = next(
+                (c for c in df.columns if c.lower() in ("ligand", "smiles", "canonical_smiles", "smi")),
+                None
+            )
+            if receptor_col is None:
+                st.error("CSV must have a 'receptor' column.")
+                st.info(f"Available columns: {', '.join(df.columns)}")
+            elif ligand_col is None:
+                st.error("CSV must have a 'ligand' or 'smiles' column.")
                 st.info(f"Available columns: {', '.join(df.columns)}")
             else:
                 if st.button("Predict batch", type="primary", key="btn_batch"):
-                    smiles_list = df[col].astype(str).tolist()
-                    results = predict_batch(
-                        smiles_list,
-                        threshold=threshold,
-                        predictor=predictor,
-                    )
+                    pairs = list(zip(df[receptor_col].astype(str), df[ligand_col].astype(str)))
+                    results = predict_batch(pairs, predictor=predictor)
+                    
                     df_out = df.copy()
-                    df_out["prob_BBB+"] = [r.prob for r in results]
-                    df_out["BBB_class"] = [r.bbb_class for r in results]
-                    # Add standard error columns
+                    df_out["predicted_class"] = [r.predicted_class for r in results]
+                    df_out["class_id"] = [r.class_id for r in results]
+                    df_out["prob_agonist"] = [r.prob_agonist for r in results]
+                    df_out["prob_antagonist"] = [r.prob_antagonist for r in results]
+                    df_out["prob_inactive"] = [r.prob_inactive for r in results]
                     df_out["prob_std_error"] = [
-                        f"{r.prob_std_error:.6f}" if r.prob_std_error is not None else "" 
+                        f"{r.prob_std_error:.6f}" if r.prob_std_error is not None else ""
                         for r in results
                     ]
                     df_out["prob_std_error_pct"] = [
-                        f"{r.prob_std_error * 100:.2f}%" if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
-                    # Add confidence interval bounds
-                    df_out["prob_CI_lower"] = [
-                        f"{max(0.0, r.prob - 2 * r.prob_std_error):.6f}" 
-                        if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
-                    df_out["prob_CI_upper"] = [
-                        f"{min(1.0, r.prob + 2 * r.prob_std_error):.6f}" 
-                        if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
-                    df_out["p_efflux"] = [r.p_efflux for r in results]
-                    df_out["p_influx"] = [r.p_influx for r in results]
-                    df_out["p_pampa"] = [r.p_pampa for r in results]
-
-                    # Compute similarity for each result
-                    train_fps = get_train_fps()
-                    if train_fps is not None:
-                        max_similarities = []
-                        similarity_flags = []
-                        for r in results:
-                            if r.is_valid and r.canonical_smiles:
-                                query_fp = compute_ecfp4_fingerprint(r.canonical_smiles)
-                                if query_fp is not None:
-                                    max_sim = compute_similarity(query_fp, train_fps)
-                                    max_similarities.append(max_sim)
-                                    similarity_flags.append(similarity_flag(max_sim))
-                                else:
-                                    max_similarities.append(None)
-                                    similarity_flags.append("")
-                            else:
-                                max_similarities.append(None)
-                                similarity_flags.append("")
-                        
-                        df_out["max_similarity"] = [
-                            f"{s:.4f}" if s is not None else "" for s in max_similarities
-                        ]
-                        df_out["similarity_flag"] = similarity_flags
-                        
-                        # Show summary warning if any molecules have low similarity
-                        low_sim_count = sum(1 for flag in similarity_flags if flag == "low")
-                        if low_sim_count > 0:
-                            st.warning(
-                                f"⚠️ **{low_sim_count} molecule(s) have low similarity to training set** "
-                                "(similarity < 0.3). Predictions may be unreliable."
-                            )
-                    else:
-                        st.info("Training fingerprints not available. Similarity analysis disabled.")
+                        f"{r.prob_std_error * 100:.2f}%" if r.prob_std_error is not None else ""
+                        for r in results]
+                    df_out["canonical_smiles"] = [r.canonical_smiles for r in results]
+                    df_out["error"] = [r.error for r in results]
 
                     st.subheader("Results")
                     st.dataframe(df_out, use_container_width=True)
@@ -926,112 +788,16 @@ def render_mechbbb_prediction_page():
                     st.download_button(
                         "Download CSV",
                         df_out.to_csv(index=False),
-                        "mechbbb_predictions.csv",
+                        "gpcr_predictions.csv",
                         "text/csv",
                         key="download_csv",
                     )
         else:
-            st.info("Upload a CSV file with a SMILES column to run batch predictions.")
+            st.info("Upload a CSV file with 'receptor' and 'ligand' (or 'smiles') columns to run batch predictions.")
 
     st.divider()
     st.caption(
-        "MechBBB-ML (Model C). Stage-1: efflux/influx/PAMPA. Stage-2: PhysChem+ECFP+mech."
-    )
-
-
-def render_demo_prediction_page():
-    """Render the Demo Prediction Tool page with known CNS+ and CNS- ligands."""
-    st.title("Demo Prediction Tool")
-    st.markdown(
-        """
-        Run predictions on **25 known CNS-penetrating (BBB+)** and **25 known non-CNS-penetrating (BBB−)** ligands.
-        Select a ligand from each dropdown and click **Predict** to compare model predictions with the expected classification.
-        """
-    )
-
-    try:
-        predictor = get_predictor()
-    except Exception as e:
-        st.error(f"Could not load model: {e}")
-        st.info(
-            "Ensure the **artifacts/** folder contains the model files (see Documentation)."
-        )
-        return
-
-    threshold = st.sidebar.slider(
-        "Classification threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01,
-        key="demo_threshold",
-    )
-
-    st.subheader("CNS-penetrating ligands (BBB+)")
-    cns_plus_labels = [f"{name}" for name, _ in CNS_PENETRATING_LIGANDS]
-    cns_plus_map = {name: smi for name, smi in CNS_PENETRATING_LIGANDS}
-    selected_cns_plus = st.selectbox(
-        "Select a known CNS-penetrating ligand",
-        options=cns_plus_labels,
-        key="demo_cns_plus",
-    )
-    smiles_cns_plus = cns_plus_map.get(selected_cns_plus, "")
-
-    st.subheader("Non-CNS-penetrating ligands (BBB−)")
-    cns_minus_labels = [f"{name}" for name, _ in NON_CNS_PENETRATING_LIGANDS]
-    cns_minus_map = {name: smi for name, smi in NON_CNS_PENETRATING_LIGANDS}
-    selected_cns_minus = st.selectbox(
-        "Select a known non-CNS-penetrating ligand",
-        options=cns_minus_labels,
-        key="demo_cns_minus",
-    )
-    smiles_cns_minus = cns_minus_map.get(selected_cns_minus, "")
-
-    st.divider()
-    st.subheader("Run prediction")
-
-    run_for = st.radio(
-        "Predict for",
-        ["CNS-penetrating ligand only", "Non-CNS-penetrating ligand only", "Both"],
-        horizontal=True,
-        key="demo_which",
-    )
-
-    if st.button("Predict", type="primary", key="btn_demo"):
-        to_run = []
-        if run_for in ("CNS-penetrating ligand only", "Both"):
-            to_run.append((selected_cns_plus, smiles_cns_plus, "CNS+ (expected BBB+)"))
-        if run_for in ("Non-CNS-penetrating ligand only", "Both"):
-            to_run.append((selected_cns_minus, smiles_cns_minus, "CNS− (expected BBB−)"))
-
-        for label, smiles, expected in to_run:
-            st.markdown(f"#### {label} — {expected}")
-            result = predict_single(smiles, threshold=threshold, predictor=predictor)
-            if result.is_valid:
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("P(BBB+)", f"{result.prob:.4f}")
-                with col2:
-                    st.metric("Prediction", result.bbb_class)
-                with col3:
-                    st.metric("Threshold", f"{threshold:.2f}")
-                st.caption(f"SMILES: `{smiles}`")
-                # Similarity if available
-                train_fps = get_train_fps()
-                if train_fps is not None:
-                    query_fp = compute_ecfp4_fingerprint(result.canonical_smiles)
-                    if query_fp is not None:
-                        max_sim = compute_similarity(query_fp, train_fps)
-                        sim_flag = similarity_flag(max_sim)
-                        st.metric("Max Similarity (ECFP4 Tanimoto)", f"{max_sim:.4f}")
-                        st.metric("Similarity Flag", sim_flag)
-                        if sim_flag == "low":
-                            st.warning(
-                                "⚠️ **Low similarity to training set** (similarity < 0.3). "
-                                "Predictions may be unreliable for this molecule."
-                            )
-            else:
-                st.error(result.error)
-            st.divider()
-
-    st.caption(
-        "MechBBB-ML (Model C). Demo ligands are from literature/PubChem/ChEMBL as known BBB+ or BBB−."
+        "GPCR Class A Functional Activity Prediction. Multi-class classification: Agonist/Antagonist/Inactive."
     )
 
 
@@ -1053,11 +819,8 @@ def main():
     if st.sidebar.button("Documentation", use_container_width=True, key="nav_docs"):
         st.session_state.current_page = "Documentation"
 
-    if st.sidebar.button("Demo Prediction Tool", use_container_width=True, key="nav_demo"):
-        st.session_state.current_page = "Demo Prediction Tool"
-
-    if st.sidebar.button("MechBBB-ML Prediction", use_container_width=True, key="nav_prediction"):
-        st.session_state.current_page = "MechBBB-ML Prediction"
+    if st.sidebar.button("GPCR Ligand Functional Activity Prediction", use_container_width=True, key="nav_prediction"):
+        st.session_state.current_page = "GPCR Ligand Functional Activity Prediction"
 
     st.sidebar.markdown("---")
 
@@ -1065,10 +828,8 @@ def main():
         render_home_page()
     elif st.session_state.current_page == "Documentation":
         render_documentation_page()
-    elif st.session_state.current_page == "MechBBB-ML Prediction":
-        render_mechbbb_prediction_page()
-    elif st.session_state.current_page == "Demo Prediction Tool":
-        render_demo_prediction_page()
+    elif st.session_state.current_page == "GPCR Ligand Functional Activity Prediction":
+        render_gpcr_prediction_page()
 
 
 if __name__ == "__main__":

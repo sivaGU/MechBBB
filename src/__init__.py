@@ -1,1 +1,1 @@
-# MechBBB-ML package
+# GPCR GUI package
