@@ -648,11 +648,13 @@ def render_mechbbb_prediction_page():
     preview_img = st.session_state.get("last_ligand_image")
     preview_smiles = st.session_state.get("last_ligand_smiles")
     if preview_img:
-        st.image(io.BytesIO(preview_img), use_container_width=False, width=400)
-        st.caption(
-            "Latest ligand preview"
-            + (f" · SMILES: `{preview_smiles}`" if preview_smiles else "")
-        )
+        _, preview_col, _ = st.columns([1, 2, 1])
+        with preview_col:
+            st.image(io.BytesIO(preview_img), use_container_width=False, width=400)
+            st.caption(
+                "Latest ligand preview"
+                + (f" · SMILES: `{preview_smiles}`" if preview_smiles else "")
+            )
     else:
         st.info("Ligand preview will appear here after a valid single-molecule prediction.")
 
