@@ -258,11 +258,21 @@ st.markdown("""
     .main .block-container,
     section.main .block-container {
         background-color: #ffffff !important;
-        padding: 1.2rem 1.1rem 1.2rem 1.1rem;
-        margin: 1rem auto;
+        padding: 0.6rem 0.9rem 0.8rem 0.9rem;
+        margin: 0.4rem auto;
         max-width: 100%;
         border-radius: 8px;
         box-shadow: 0 2px 12px rgba(13, 79, 92, 0.08);
+    }
+
+    /* Reduce vertical whitespace between stacked Streamlit blocks */
+    [data-testid="stVerticalBlock"] {
+        gap: 0.35rem;
+    }
+
+    .stDivider {
+        margin-top: 0.35rem;
+        margin-bottom: 0.45rem;
     }
     
     [data-testid="stSidebar"] {
@@ -318,6 +328,8 @@ st.markdown("""
     h1, h2, h3 {
         color: #1E7A8C;
         font-weight: 700;
+        margin-top: 0.2rem;
+        margin-bottom: 0.35rem;
     }
     
     a {
@@ -333,6 +345,16 @@ st.markdown("""
     [data-testid="stMetricValue"] {
         color: #1E7A8C;
         font-weight: 600;
+        font-size: 1.25rem;
+        line-height: 1.15;
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-size: 0.82rem;
+    }
+
+    [data-testid="stMetricDelta"] {
+        font-size: 0.75rem;
     }
     
     .stSuccess {
@@ -649,9 +671,9 @@ def render_mechbbb_prediction_page():
     preview_img = st.session_state.get("last_ligand_image")
     preview_smiles = st.session_state.get("last_ligand_smiles")
     if preview_img:
-        _, preview_col, _ = st.columns([1, 2, 1])
+        _, preview_col, _ = st.columns([1, 3, 1])
         with preview_col:
-            st.image(io.BytesIO(preview_img), use_container_width=False, width=300)
+            st.image(io.BytesIO(preview_img), use_container_width=False, width=520)
             st.caption(
                 "Latest ligand preview"
                 + (f" · SMILES: `{preview_smiles}`" if preview_smiles else "")
@@ -777,29 +799,6 @@ def render_mechbbb_prediction_page():
                     with mcol3:
                         st.metric("p_pampa", f"{result.p_pampa:.4f}")
 
-                    st.markdown("#### Visual Summary")
-                    vis_col1, vis_col2 = st.columns(2)
-                    with vis_col1:
-                        st.caption("P(BBB+) confidence gauge")
-                        st.progress(int(max(0, min(100, round(result.prob * 100)))))
-                        if result.prob_std_error is not None:
-                            ci_lower = max(0.0, result.prob - 2 * result.prob_std_error)
-                            ci_upper = min(1.0, result.prob + 2 * result.prob_std_error)
-                            st.caption(f"95% CI: {ci_lower:.3f} to {ci_upper:.3f}")
-                    with vis_col2:
-                        st.caption("Mechanistic probability profile")
-                        mech_df = pd.DataFrame(
-                            {
-                                "Probability": [
-                                    result.p_efflux,
-                                    result.p_influx,
-                                    result.p_pampa,
-                                ]
-                            },
-                            index=["Efflux", "Influx", "PAMPA"],
-                        )
-                        st.bar_chart(mech_df, use_container_width=True, height=220)
-
                     # Applicability domain: ECFP4 Tanimoto similarity to training set
                     train_fps = get_train_fps()
                     if train_fps is not None:
@@ -838,12 +837,14 @@ def render_mechbbb_prediction_page():
                     img_bytes = render_ligand_structure(mol) if mol else None
                     source_label = "RDKit clean depiction"
                     if img_bytes is None and smiles_for_lookup:
-                        img_bytes = fetch_structure_image_from_database(smiles_for_lookup)
+                        img_bytes = fetch_structure_image_from_database(
+                            smiles_for_lookup, width=900, height=700
+                        )
                         source_label = "NCI CACTUS fallback"
                     if img_bytes:
                         st.session_state.last_ligand_image = img_bytes
                         st.session_state.last_ligand_smiles = result.canonical_smiles
-                        st.info("Ligand preview updated above.")
+                        st.rerun()
                     else:
                         st.warning(
                             "Could not retrieve or draw structure for this molecule."
@@ -944,32 +945,6 @@ def render_mechbbb_prediction_page():
 
                     st.subheader("Results")
                     st.dataframe(df_out, use_container_width=True)
-
-                    st.markdown("#### Batch Visual Summary")
-                    bcol1, bcol2 = st.columns(2)
-                    with bcol1:
-                        st.caption("Predicted class counts")
-                        class_counts = (
-                            df_out["BBB_class"].astype(str).value_counts().rename("count")
-                        )
-                        st.bar_chart(class_counts, use_container_width=True, height=220)
-                    with bcol2:
-                        st.caption("P(BBB+) distribution")
-                        prob_vals = pd.to_numeric(df_out["prob_BBB+"], errors="coerce").dropna()
-                        if len(prob_vals) > 0:
-                            hist_counts, bin_edges = np.histogram(prob_vals, bins=10, range=(0.0, 1.0))
-                            hist_df = pd.DataFrame(
-                                {
-                                    "bin": [
-                                        f"{bin_edges[i]:.1f}-{bin_edges[i + 1]:.1f}"
-                                        for i in range(len(hist_counts))
-                                    ],
-                                    "count": hist_counts,
-                                }
-                            ).set_index("bin")
-                            st.bar_chart(hist_df, use_container_width=True, height=220)
-                        else:
-                            st.info("No valid probabilities to plot.")
 
                     st.subheader("Download results")
                     st.download_button(
