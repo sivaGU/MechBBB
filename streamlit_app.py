@@ -151,37 +151,27 @@ def fetch_structure_image_from_database(smiles: str, width: int = 400, height: i
         return None
 
     def _enhance_png(png_bytes: bytes) -> bytes:
-        """Boost contrast and thicken bonds/atom labels for clearer display."""
+        """
+        Improve clarity for bonds and atom labels without smearing text.
+
+        Morphological dilation was removed: it merged letters into blobs/dots.
+        We use contrast + unsharp mask + mild sharpening so strokes look
+        bolder while keeping letters readable.
+        """
         try:
             from PIL import Image, ImageEnhance, ImageFilter
 
             img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-            img = ImageEnhance.Contrast(img).enhance(1.5)
-
-            # Thicken dark strokes (bonds + letters): dilate per-channel on inverted intensity.
-            arr = np.asarray(img, dtype=np.float32)
-            out = np.empty_like(arr)
-            footprint = (5, 5)
+            img = ImageEnhance.Contrast(img).enhance(1.32)
+            img = ImageEnhance.Color(img).enhance(1.08)
+            # Edge-aware sharpening: clearer lines and glyph edges, not wider blobs
             try:
-                from scipy import ndimage
-
-                for c in range(3):
-                    inv = 255.0 - arr[:, :, c]
-                    thick = ndimage.grey_dilation(inv, size=footprint)
-                    out[:, :, c] = np.clip(255.0 - thick, 0.0, 255.0)
+                img = img.filter(
+                    ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=2)
+                )
             except Exception:
-                r, g, b = img.split()
-
-                def _thick_ch(ch):
-                    inv = Image.eval(ch, lambda x: 255 - x)
-                    inv = inv.filter(ImageFilter.MaxFilter(size=5))
-                    return Image.eval(inv, lambda x: 255 - x)
-
-                img = Image.merge("RGB", (_thick_ch(r), _thick_ch(g), _thick_ch(b)))
-                out = np.asarray(img, dtype=np.float32)
-
-            img = Image.fromarray(out.astype(np.uint8), mode="RGB")
-            img = ImageEnhance.Sharpness(img).enhance(1.25)
+                pass
+            img = ImageEnhance.Sharpness(img).enhance(1.18)
             out = io.BytesIO()
             img.save(out, format="PNG")
             return out.getvalue()
@@ -896,7 +886,7 @@ def render_mechbbb_prediction_page():
                     img_bytes = render_ligand_structure(mol) if mol else None
                     if img_bytes is None and smiles_for_lookup:
                         img_bytes = fetch_structure_image_from_database(
-                            smiles_for_lookup, width=900, height=700
+                            smiles_for_lookup, width=1200, height=900
                         )
                     if img_bytes:
                         st.session_state.last_ligand_image = img_bytes
