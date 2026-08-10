@@ -1,11 +1,10 @@
-ligands · PY
 """
 Demo ligands for the MechBBB-ML GUI Demo Prediction Tool.
 25 known CNS-penetrating (BBB+) and 25 known non-CNS-penetrating (BBB-) ligands with SMILES.
 All SMILES validated with RDKit and checked against the named compound's molecular weight.
 References: PubChem, ChEMBL, DrugBank; BBBP/B3DB-style classifications.
 """
- 
+
 # 25 known CNS-penetrating ligands (BBB+)
 CNS_PENETRATING_LIGANDS = [
     ('Caffeine', 'Cn1c(=O)c2c(ncn2C)n(C)c1=O'),
@@ -34,7 +33,7 @@ CNS_PENETRATING_LIGANDS = [
     ('Zolpidem', 'Cc1ccc(-c2nc3ccc(C)cn3c2CC(=O)N(C)C)cc1'),
     ('Phenobarbital', 'CCC1(c2ccccc2)C(=O)NC(=O)NC1=O'),
 ]
- 
+
 # 25 known non-CNS-penetrating ligands (BBB-)
 NON_CNS_PENETRATING_LIGANDS = [
     ('Atenolol', 'CC(C)NCC(O)COc1ccc(CC(N)=O)cc1'),
@@ -63,4 +62,3 @@ NON_CNS_PENETRATING_LIGANDS = [
     ('Cetirizine', 'O=C(O)COCCN1CCN(C(c2ccccc2)c2ccc(Cl)cc2)CC1'),
     ('Succinylcholine', 'C[N+](C)(C)CCOC(=O)CCC(=O)OCC[N+](C)(C)C'),
 ]
- 
