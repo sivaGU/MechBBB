@@ -6,6 +6,7 @@ Run from this folder (project root):
 """
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -171,31 +172,32 @@ def fetch_structure_image_from_database(smiles: str, width: int = 400, height: i
 def get_mol_for_drawing(smiles: Optional[str] = None, file_content: Optional[bytes] = None, file_extension: Optional[str] = None):
     """
     Get an RDKit mol for 2D structure drawing (no 3D embedding required).
-    Uses uploaded file if present, else SMILES. Returns Chem.Mol or None.
+
+    2D depictions must always come from SMILES (preferably canonical) so bond
+    orders and aromaticity are correct. Uploaded file blocks (PDB/PDBQT/MOL2)
+    are intentionally ignored for drawing — use get_mol_with_3d for coordinates.
+    file_content / file_extension are accepted for API compatibility but unused.
     """
-    mol = None
-    if file_content is not None and file_extension is not None:
-        ext = file_extension.lower()
-        try:
-            text = file_content.decode("utf-8")
-            if ext == ".sdf":
-                from io import StringIO
-                supplier = Chem.SDMolSupplier(StringIO(text))
-                mols = [m for m in supplier if m is not None]
-                mol = mols[0] if mols else None
-            elif ext == ".mol":
-                mol = Chem.MolFromMolBlock(text)
-            elif ext in (".pdb", ".pdbqt"):
-                mol = Chem.MolFromPDBBlock(text)
-            elif ext == ".mol2":
-                mol = Chem.MolFromMol2Block(text)
-        except Exception:
-            mol = None
-    if mol is None and smiles is not None:
-        smiles_str = str(smiles).strip()
-        if smiles_str:
-            mol = Chem.MolFromSmiles(smiles_str)
-    return mol
+    del file_content, file_extension  # 2D path is SMILES-only; 3D uses get_mol_with_3d
+    if smiles is None:
+        return None
+    smiles_str = str(smiles).strip()
+    if not smiles_str:
+        return None
+    return Chem.MolFromSmiles(smiles_str)
+
+
+def validate_demo_ligands() -> list:
+    """
+    Sanity-check demo SMILES with RDKit. Returns list of (name, smiles) that fail
+    MolFromSmiles so bad entries cannot silently render as blank/wrong.
+    """
+    bad = []
+    for name, smi in CNS_PENETRATING_LIGANDS + NON_CNS_PENETRATING_LIGANDS:
+        if Chem.MolFromSmiles(smi) is None:
+            bad.append((name, smi))
+            logging.warning("Demo ligand SMILES failed RDKit parse: %s | %s", name, smi)
+    return bad
 
 
 def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
@@ -805,7 +807,7 @@ def render_mechbbb_prediction_page():
             extracted = extract_smiles_from_file(content, ext)
             if extracted:
                 smiles_to_use = extracted
-                # Store for 3D viewer (use uploaded structure if it has 3D coords)
+                # Store for 3D viewer only (2D depiction always uses canonical SMILES)
                 st.session_state.structure_file_content = content
                 st.session_state.structure_file_ext = ext
                 st.success(f"Extracted SMILES from {structure_file.name}")
@@ -813,10 +815,13 @@ def render_mechbbb_prediction_page():
                 st.session_state.structure_file_content = None
                 st.session_state.structure_file_ext = None
                 st.error(f"Could not extract SMILES from {ext.upper()} file. Try SMILES input instead.")
-        elif smiles_input and smiles_input.strip():
-            smiles_to_use = smiles_input.strip()
+        else:
+            # Non-file path (typed SMILES / cleared uploader): drop stale upload
+            # state so a prior PDB/MOL2 never contaminates the next molecule.
             st.session_state.structure_file_content = None
             st.session_state.structure_file_ext = None
+            if smiles_input and smiles_input.strip():
+                smiles_to_use = smiles_input.strip()
         if st.button("Predict", type="primary", key="btn_single"):
             if smiles_to_use:
                 result = predict_single(
@@ -927,15 +932,9 @@ def render_mechbbb_prediction_page():
                         else:
                             st.info("Could not compute fingerprint for similarity analysis.")
 
-                    # Ligand structure preview is shown above the input controls.
+                    # 2D ligand preview always from canonical SMILES (never raw file block).
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
-                    file_content = st.session_state.get("structure_file_content")
-                    file_ext = st.session_state.get("structure_file_ext")
-                    mol = get_mol_for_drawing(
-                        smiles_for_lookup if smiles_for_lookup else None,
-                        file_content=file_content,
-                        file_extension=file_ext,
-                    )
+                    mol = get_mol_for_drawing(smiles_for_lookup if smiles_for_lookup else None)
                     img_bytes = render_ligand_structure(mol) if mol else None
                     if img_bytes is None and smiles_for_lookup:
                         img_bytes = fetch_structure_image_from_database(smiles_for_lookup)
@@ -1076,6 +1075,19 @@ def render_demo_prediction_page():
         Select a ligand from each dropdown and click **Predict** to compare model predictions with the expected classification.
         """
     )
+
+    # Sanity guard: never silently accept a demo SMILES RDKit cannot parse.
+    bad_demo = validate_demo_ligands()
+    if bad_demo:
+        names = ", ".join(n for n, _ in bad_demo)
+        st.error(
+            f"Demo ligand SMILES failed RDKit validation ({len(bad_demo)}): {names}. "
+            "Fix demo_ligands.py before trusting structures on this page."
+        )
+
+    # Demo selection never uses an uploaded structure file.
+    st.session_state.structure_file_content = None
+    st.session_state.structure_file_ext = None
 
     try:
         predictor = get_predictor()
