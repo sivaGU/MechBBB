@@ -1233,24 +1233,34 @@ def render_demo_prediction_page():
 # MAIN - NAVIGATION
 # ============================================================================
 
+_MAIN_RENDERED = False
+
+
 def main():
     """Main app entry point with navigation."""
+    # Prevent the navigation widgets from being registered twice if this
+    # entry point is accidentally called more than once in a single script run.
+    global _MAIN_RENDERED
+    if _MAIN_RENDERED:
+        return
+    _MAIN_RENDERED = True
+
     if "current_page" not in st.session_state:
         st.session_state.current_page = "Home"
 
     st.sidebar.markdown("### Navigation")
     st.sidebar.markdown("")
 
-    if st.sidebar.button("Home", use_container_width=True, key="nav_home"):
+    if st.sidebar.button("Home", use_container_width=True, key="mechbbb_sidebar_nav_home"):
         st.session_state.current_page = "Home"
 
-    if st.sidebar.button("Documentation", use_container_width=True, key="nav_docs"):
+    if st.sidebar.button("Documentation", use_container_width=True, key="mechbbb_sidebar_nav_docs"):
         st.session_state.current_page = "Documentation"
 
-    if st.sidebar.button("Demo Prediction Tool", use_container_width=True, key="nav_demo"):
+    if st.sidebar.button("Demo Prediction Tool", use_container_width=True, key="mechbbb_sidebar_nav_demo"):
         st.session_state.current_page = "Demo Prediction Tool"
 
-    if st.sidebar.button("MechBBB-ML Prediction", use_container_width=True, key="nav_prediction"):
+    if st.sidebar.button("MechBBB-ML Prediction", use_container_width=True, key="mechbbb_sidebar_nav_prediction"):
         st.session_state.current_page = "MechBBB-ML Prediction"
 
     st.sidebar.markdown("---")
@@ -1263,10 +1273,6 @@ def main():
         render_mechbbb_prediction_page()
     elif st.session_state.current_page == "Demo Prediction Tool":
         render_demo_prediction_page()
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
