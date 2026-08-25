@@ -648,6 +648,22 @@ def render_home_page():
         """
     )
 
+    st.divider()
+
+    st.markdown(
+        """
+        ### Publication and Contact
+
+        **MechBBB: A Two-Stage Mechanism-Informed Machine Learning Tool for Blood-Brain Barrier Permeability Prediction.**  
+        Yu Shin, Sahith Mada, Sivanesan Dakshanamurthy\\*  
+        *Pharmaceuticals* (Submitted).
+
+        **For Contact:**  
+        Dr. Sivanesan Dakshanamurthy, PhD, MBA  
+        [sivanesan@innsciteai.com](mailto:sivanesan@innsciteai.com) · [sd233@georgetown.edu](mailto:sd233@georgetown.edu)
+        """
+    )
+
 
 def render_documentation_page():
     """Render the documentation page."""
@@ -1247,6 +1263,10 @@ def main():
         render_mechbbb_prediction_page()
     elif st.session_state.current_page == "Demo Prediction Tool":
         render_demo_prediction_page()
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
