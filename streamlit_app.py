@@ -236,6 +236,38 @@ def native_rdkit_drawing_available() -> bool:
     return _rdMolDraw2D is not None
 
 
+# Standard chemical (CPK-like) colors for atom *labels* keyed by atomic symbol.
+ATOM_LABEL_COLORS_HEX = {
+    "C": "#2c2c2c",   # charcoal
+    "N": "#1e4fd6",   # blue
+    "O": "#e01e1e",   # red
+    "S": "#e6a000",   # yellow/orange
+    "F": "#1a9e3f",   # green
+    "Cl": "#1a9e3f",
+    "Br": "#1a9e3f",
+    "I": "#1a9e3f",
+    "H": "#4a4a4a",   # dark gray
+}
+BOND_STROKE_HEX = "#2c2c2c"
+# RDKit palette: atomic number → (r, g, b) in 0–1
+ATOM_PALETTE_RGB = {
+    1: (0.29, 0.29, 0.29),   # H
+    6: (0.17, 0.17, 0.17),   # C
+    7: (0.12, 0.31, 0.84),   # N
+    8: (0.88, 0.12, 0.12),   # O
+    9: (0.10, 0.62, 0.25),   # F
+    16: (0.90, 0.63, 0.00),  # S
+    17: (0.10, 0.62, 0.25),  # Cl
+    35: (0.10, 0.62, 0.25),  # Br
+    53: (0.10, 0.62, 0.25),  # I
+}
+
+
+def atom_label_color_hex(symbol: str) -> str:
+    """Return label color for an atomic symbol (not substring matching)."""
+    return ATOM_LABEL_COLORS_HEX.get(symbol, BOND_STROKE_HEX)
+
+
 def render_ligand_structure(mol, size: int = 480) -> Optional[bytes]:
     """
     Draw ligand with RDKit Cairo when available (readable fonts / bonds at display size).
@@ -260,6 +292,21 @@ def render_ligand_structure(mol, size: int = 480) -> Optional[bytes]:
             opts.fixedFontSize = 18
         except Exception:
             pass
+        # Element-colored atom labels; charcoal bonds
+        try:
+            opts.setAtomPalette(dict(ATOM_PALETTE_RGB))
+        except Exception:
+            try:
+                opts.updateAtomPalette(dict(ATOM_PALETTE_RGB))
+            except Exception:
+                pass
+        try:
+            opts.setBondLineColour((0.17, 0.17, 0.17))
+        except Exception:
+            try:
+                opts.bondLineColour = (0.17, 0.17, 0.17)
+            except Exception:
+                pass
 
         draw_mol = Chem.Mol(mol)
         if draw_mol.GetNumConformers() > 0:
@@ -340,7 +387,7 @@ def render_ligand_structure_svg(mol, size: int = 480) -> Optional[str]:
                 parts.append(
                     f'<line x1="{x1 + px * off:.2f}" y1="{y1 + py * off:.2f}" '
                     f'x2="{x2 + px * off:.2f}" y2="{y2 + py * off:.2f}" '
-                    f'stroke="#1a1a1a" stroke-width="{sw:.2f}" stroke-linecap="round"/>'
+                    f'stroke="{BOND_STROKE_HEX}" stroke-width="{sw:.2f}" stroke-linecap="round"/>'
                 )
 
         for i, atom in enumerate(draw_mol.GetAtoms()):
@@ -356,12 +403,13 @@ def render_ligand_structure_svg(mol, size: int = 480) -> Optional[str]:
             else:
                 label = sym
             safe = html_module.escape(label)
+            fill = atom_label_color_hex(sym)
             r = font_size * 0.62
             parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{r:.2f}" fill="#ffffff"/>')
             parts.append(
                 f'<text x="{x:.2f}" y="{y:.2f}" text-anchor="middle" dominant-baseline="central" '
                 f'font-family="Arial, Helvetica, sans-serif" font-size="{font_size}px" '
-                f'font-weight="700" fill="#0d4f5c">{safe}</text>'
+                f'font-weight="700" fill="{fill}">{safe}</text>'
             )
 
         parts.append("</svg>")
