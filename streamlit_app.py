@@ -10,7 +10,8 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Union
+import html as html_module
 
 # Ensure project root (this folder) is on path for src.mechbbb
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -36,7 +37,7 @@ except Exception as _draw_import_err:  # ImportError or OSError (missing .so)
     _rdMolDraw2D = None
     logging.warning(
         "RDKit Cairo drawing unavailable (%s). "
-        "Structure preview will use CACTUS fallback or show a nonfatal message.",
+        "Structure preview will use local SVG or CACTUS fallback, or show a nonfatal message.",
         _draw_import_err,
     )
 
@@ -163,10 +164,10 @@ def get_mol_with_3d(smiles: str, file_content: Optional[bytes] = None, file_exte
     return mol
 
 
-# High-res CACTUS fetch; display at restrained width (avoid enlarging a small raster).
-CACTUS_FETCH_WIDTH = 1200
-CACTUS_FETCH_HEIGHT = 900
-PREVIEW_DISPLAY_WIDTH = 380
+# Display ~450–500 px on desktop; CACTUS fetch matched to display scale (avoid tiny labels from downscaling).
+PREVIEW_DISPLAY_WIDTH = 480
+CACTUS_FETCH_WIDTH = 520
+CACTUS_FETCH_HEIGHT = 390
 
 
 def fetch_structure_image_from_database(
@@ -176,8 +177,8 @@ def fetch_structure_image_from_database(
 ) -> Optional[bytes]:
     """
     Optional fallback: fetch a 2D structure image from NCI CACTUS.
-    Request a high-resolution PNG; callers should display at a restrained width.
-    Returns PNG image bytes or None on failure. Drawing failure must not affect prediction.
+    Fetch size is matched to display size so atom labels are not shrunk by downscaling.
+    Returns PNG bytes or None. Must not affect prediction.
     """
     if not smiles or not str(smiles).strip():
         return None
@@ -235,24 +236,30 @@ def native_rdkit_drawing_available() -> bool:
     return _rdMolDraw2D is not None
 
 
-def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
+def render_ligand_structure(mol, size: int = 480) -> Optional[bytes]:
     """
-    Draw the ligand as a 2D chemical structure using RDKit Cairo when available.
-    Returns PNG bytes or None. Original drawing path retained for when system libs return.
+    Draw ligand with RDKit Cairo when available (readable fonts / bonds at display size).
     Prediction must never depend on this function.
     """
     if mol is None or _rdMolDraw2D is None:
         return None
     try:
-        draw_size = max(300, int(size))
-        drawer = _rdMolDraw2D.MolDraw2DCairo(draw_size, int(draw_size * 0.78))
+        # Canvas ≈ display size so font px map 1:1 (avoid downscaling tiny labels)
+        draw_w = max(450, int(size))
+        draw_h = max(340, int(draw_w * 0.75))
+        drawer = _rdMolDraw2D.MolDraw2DCairo(draw_w, draw_h)
         opts = drawer.drawOptions()
-        opts.bondLineWidth = 3.0
-        opts.padding = 0.02
-        opts.baseFontSize = 0.95
-        opts.minFontSize = 14
-        opts.maxFontSize = 30
+        opts.bondLineWidth = 3.2
+        opts.padding = 0.05  # tight margins; molecule fills most of the canvas
+        opts.baseFontSize = 1.15
+        opts.minFontSize = 16
+        opts.maxFontSize = 20
+        opts.additionalAtomLabelPadding = 0.12
         opts.clearBackground = True
+        try:
+            opts.fixedFontSize = 18
+        except Exception:
+            pass
 
         draw_mol = Chem.Mol(mol)
         if draw_mol.GetNumConformers() > 0:
@@ -266,31 +273,167 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
         return None
 
 
+def render_ligand_structure_svg(mol, size: int = 480) -> Optional[str]:
+    """
+    Cairo-free scalable SVG depiction using RDKit 2D coordinates only.
+    Verified path for Cloud when libXrender / rdMolDraw2D is unavailable.
+    """
+    if mol is None:
+        return None
+    try:
+        draw_mol = Chem.Mol(mol)
+        if draw_mol.GetNumConformers() > 0:
+            draw_mol.RemoveAllConformers()
+        AllChem.Compute2DCoords(draw_mol)
+        conf = draw_mol.GetConformer()
+        n = draw_mol.GetNumAtoms()
+        if n < 1:
+            return None
+
+        xs = [conf.GetAtomPosition(i).x for i in range(n)]
+        ys = [conf.GetAtomPosition(i).y for i in range(n)]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        bw = max(max_x - min_x, 1e-3)
+        bh = max(max_y - min_y, 1e-3)
+
+        W = float(max(450, int(size)))
+        H = float(max(340, int(W * 0.75)))
+        pad_frac = 0.06
+        avail_w = W * (1.0 - 2.0 * pad_frac)
+        avail_h = H * (1.0 - 2.0 * pad_frac)
+        scale = min(avail_w / bw, avail_h / bh)
+        cx = 0.5 * (min_x + max_x)
+        cy = 0.5 * (min_y + max_y)
+
+        def tx(x: float, y: float) -> Tuple[float, float]:
+            return (W * 0.5 + (x - cx) * scale, H * 0.5 - (y - cy) * scale)
+
+        # Target ~16–20 px heteroatom labels at the displayed size
+        font_size = 18
+        stroke = 3.0
+        bond_gap = 1.6
+
+        parts = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H:.0f}" '
+            f'viewBox="0 0 {W:.0f} {H:.0f}" role="img" aria-label="Molecular structure">'
+            f'<rect width="100%" height="100%" fill="#ffffff"/>'
+        ]
+
+        for bond in draw_mol.GetBonds():
+            i = bond.GetBeginAtomIdx()
+            j = bond.GetEndAtomIdx()
+            x1, y1 = tx(xs[i], ys[i])
+            x2, y2 = tx(xs[j], ys[j])
+            dx, dy = x2 - x1, y2 - y1
+            length = (dx * dx + dy * dy) ** 0.5 or 1.0
+            px, py = -dy / length, dx / length
+            order = float(bond.GetBondTypeAsDouble())
+            if order >= 2.9:
+                offsets = (-bond_gap * 1.35, 0.0, bond_gap * 1.35)
+            elif order >= 1.4:
+                offsets = (-bond_gap, bond_gap)
+            else:
+                offsets = (0.0,)
+            sw = stroke * (0.9 if len(offsets) > 1 else 1.0)
+            for off in offsets:
+                parts.append(
+                    f'<line x1="{x1 + px * off:.2f}" y1="{y1 + py * off:.2f}" '
+                    f'x2="{x2 + px * off:.2f}" y2="{y2 + py * off:.2f}" '
+                    f'stroke="#1a1a1a" stroke-width="{sw:.2f}" stroke-linecap="round"/>'
+                )
+
+        for i, atom in enumerate(draw_mol.GetAtoms()):
+            sym = atom.GetSymbol()
+            charge = atom.GetFormalCharge()
+            if sym == "C" and charge == 0:
+                continue
+            x, y = tx(xs[i], ys[i])
+            if charge > 0:
+                label = f"{sym}{'+' if charge == 1 else f'{charge}+'}"
+            elif charge < 0:
+                label = f"{sym}{'-' if charge == -1 else f'{abs(charge)}-'}"
+            else:
+                label = sym
+            safe = html_module.escape(label)
+            r = font_size * 0.62
+            parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{r:.2f}" fill="#ffffff"/>')
+            parts.append(
+                f'<text x="{x:.2f}" y="{y:.2f}" text-anchor="middle" dominant-baseline="central" '
+                f'font-family="Arial, Helvetica, sans-serif" font-size="{font_size}px" '
+                f'font-weight="700" fill="#0d4f5c">{safe}</text>'
+            )
+
+        parts.append("</svg>")
+        return "".join(parts)
+    except Exception:
+        return None
+
+
 def resolve_structure_preview(
     smiles: Optional[str],
     *,
-    size: int = 400,
+    size: int = PREVIEW_DISPLAY_WIDTH,
     width: Optional[int] = None,
     height: Optional[int] = None,
-) -> Optional[bytes]:
+) -> Optional[Tuple[str, Union[bytes, str]]]:
     """
-    Primary: local RDKit Cairo. Fallback: high-res NCI CACTUS for canonical SMILES.
-    Returns None if both fail (caller shows nonfatal 'Structure preview unavailable').
-    CACTUS always requests CACTUS_FETCH_WIDTH×CACTUS_FETCH_HEIGHT; display width is separate.
+    Returns (kind, payload) where kind is 'png' or 'svg', or None if unavailable.
+    Order: RDKit Cairo PNG → local SVG (no Cairo) → CACTUS PNG (display-matched size).
     """
-    del width, height  # display size is handled by st.image(width=PREVIEW_DISPLAY_WIDTH)
+    del width, height
     smiles_str = (smiles or "").strip()
     if not smiles_str:
         return None
     mol = get_mol_for_drawing(smiles_str)
-    # Prefer slightly sharper native canvas when Cairo is available
-    native_size = max(int(size), PREVIEW_DISPLAY_WIDTH, 400)
-    img = render_ligand_structure(mol, size=native_size) if mol is not None else None
-    if img is not None:
-        return img
-    return fetch_structure_image_from_database(
+    canvas = max(int(size), PREVIEW_DISPLAY_WIDTH, 450)
+
+    if mol is not None:
+        png = render_ligand_structure(mol, size=canvas)
+        if png is not None:
+            return ("png", png)
+        svg = render_ligand_structure_svg(mol, size=canvas)
+        if svg:
+            return ("svg", svg)
+
+    cactus = fetch_structure_image_from_database(
         smiles_str, width=CACTUS_FETCH_WIDTH, height=CACTUS_FETCH_HEIGHT
     )
+    if cactus is not None:
+        return ("png", cactus)
+    return None
+
+
+def display_structure_preview(
+    smiles: Optional[str],
+    *,
+    display_width: int = PREVIEW_DISPLAY_WIDTH,
+    caption: Optional[str] = None,
+) -> bool:
+    """
+    Render structure into the current Streamlit context. Streamlit 1.39-safe (width= only).
+    Returns True if something was shown.
+    """
+    preview = resolve_structure_preview(smiles, size=display_width)
+    if preview is None:
+        return False
+    kind, payload = preview
+    # Responsive: cap width; CSS max-width 100% for smaller columns
+    w = int(display_width)
+    if kind == "svg" and isinstance(payload, str):
+        # Inline SVG scales with container; set explicit width on wrapper
+        st.markdown(
+            f'<div style="max-width:{w}px;width:100%;margin:0 auto;overflow:hidden;line-height:0;">'
+            f"{payload}</div>",
+            unsafe_allow_html=True,
+        )
+        if caption:
+            st.caption(caption)
+        return True
+    if kind == "png" and isinstance(payload, (bytes, bytearray)):
+        st.image(io.BytesIO(payload), width=w, caption=caption)
+        return True
+    return False
 
 
 CUSTOM_CSS = """
@@ -823,17 +966,16 @@ def render_mechbbb_prediction_page():
     )
     st.subheader("Ligand Structure")
     ligand_preview_slot = st.empty()
-    preview_img = st.session_state.get("last_ligand_image")
     preview_smiles = st.session_state.get("last_ligand_smiles")
-    if preview_img:
+    if preview_smiles:
         with ligand_preview_slot.container():
-            _, preview_col, _ = st.columns([0.25, 1, 0.25])
+            _, preview_col, _ = st.columns([0.15, 1, 0.15])
             with preview_col:
-                st.image(io.BytesIO(preview_img), width=PREVIEW_DISPLAY_WIDTH)
-                st.caption(
-                    "Latest ligand preview"
-                    + (f" · SMILES: `{preview_smiles}`" if preview_smiles else "")
-                )
+                if not display_structure_preview(
+                    preview_smiles,
+                    caption=f"Latest ligand preview · SMILES: `{preview_smiles}`",
+                ):
+                    st.info("Structure preview unavailable for the last predicted molecule.")
     else:
         ligand_preview_slot.info("Ligand preview will appear here after a valid single-molecule prediction.")
 
@@ -974,30 +1116,26 @@ def render_mechbbb_prediction_page():
                     # Similarity/AD intentionally disabled (no train_fps.npz).
                     _ = get_train_fps()
 
-                    # 2D ligand preview always from canonical SMILES; drawing failure must not affect prediction.
+                    # 2D ligand preview from predictor canonical SMILES; drawing failure must not affect prediction.
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
-                    img_bytes = resolve_structure_preview(smiles_for_lookup, size=400)
-                    if img_bytes:
-                        st.session_state.last_ligand_image = img_bytes
-                        st.session_state.last_ligand_smiles = result.canonical_smiles
-                        with ligand_preview_slot.container():
-                            _, preview_col, _ = st.columns([0.25, 1, 0.25])
-                            with preview_col:
-                                st.image(io.BytesIO(img_bytes), width=PREVIEW_DISPLAY_WIDTH)
-                                st.caption(
+                    st.session_state.last_ligand_smiles = result.canonical_smiles or smiles_for_lookup
+                    with ligand_preview_slot.container():
+                        _, preview_col, _ = st.columns([0.15, 1, 0.15])
+                        with preview_col:
+                            if display_structure_preview(
+                                smiles_for_lookup,
+                                caption=(
                                     "Latest ligand preview"
-                                    + (
-                                        f" · SMILES: `{result.canonical_smiles}`"
-                                        if result.canonical_smiles
-                                        else ""
-                                    )
+                                    + (f" · SMILES: `{result.canonical_smiles}`" if result.canonical_smiles else "")
+                                ),
+                            ):
+                                pass
+                            else:
+                                st.info(
+                                    "Structure preview unavailable"
+                                    + (f" (SMILES: `{result.canonical_smiles}`)" if result.canonical_smiles else "")
+                                    + ". Prediction results above are unaffected."
                                 )
-                    else:
-                        st.info(
-                            "Structure preview unavailable"
-                            + (f" (SMILES: `{result.canonical_smiles}`)" if result.canonical_smiles else "")
-                            + ". Prediction results above are unaffected."
-                        )
                 else:
                     st.error(result.error)
             else:
@@ -1129,13 +1267,11 @@ def render_demo_prediction_page():
     ):
         with col:
             st.caption(f"{title}")
-            img_sel = resolve_structure_preview(smi, size=400)
-            if img_sel:
-                st.image(io.BytesIO(img_sel), width=PREVIEW_DISPLAY_WIDTH)
-            elif smi:
-                st.caption("Structure preview unavailable")
-            else:
-                st.caption("—")
+            if not display_structure_preview(smi):
+                if smi:
+                    st.caption("Structure preview unavailable")
+                else:
+                    st.caption("—")
 
     st.divider()
     st.subheader("Run prediction")
@@ -1175,15 +1311,11 @@ def render_demo_prediction_page():
                         f"p_influx={result.p_influx:.4f}, p_pampa={result.p_pampa:.4f}"
                     )
                 smiles_for_demo = (result.canonical_smiles or result.smiles or smiles or "").strip()
-                img_demo = resolve_structure_preview(smiles_for_demo, size=400)
                 with res_right:
-                    if img_demo:
-                        st.image(
-                            io.BytesIO(img_demo),
-                            caption="Ligand structure (2D)",
-                            width=PREVIEW_DISPLAY_WIDTH,
-                        )
-                    else:
+                    if not display_structure_preview(
+                        smiles_for_demo,
+                        caption="Ligand structure (2D)",
+                    ):
                         st.caption("Structure preview unavailable (prediction unaffected).")
             else:
                 st.error(result.error)
