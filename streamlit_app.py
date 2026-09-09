@@ -163,9 +163,20 @@ def get_mol_with_3d(smiles: str, file_content: Optional[bytes] = None, file_exte
     return mol
 
 
-def fetch_structure_image_from_database(smiles: str, width: int = 400, height: int = 400) -> Optional[bytes]:
+# High-res CACTUS fetch; display at restrained width (avoid enlarging a small raster).
+CACTUS_FETCH_WIDTH = 1200
+CACTUS_FETCH_HEIGHT = 900
+PREVIEW_DISPLAY_WIDTH = 380
+
+
+def fetch_structure_image_from_database(
+    smiles: str,
+    width: int = CACTUS_FETCH_WIDTH,
+    height: int = CACTUS_FETCH_HEIGHT,
+) -> Optional[bytes]:
     """
     Optional fallback: fetch a 2D structure image from NCI CACTUS.
+    Request a high-resolution PNG; callers should display at a restrained width.
     Returns PNG image bytes or None on failure. Drawing failure must not affect prediction.
     """
     if not smiles or not str(smiles).strip():
@@ -174,7 +185,7 @@ def fetch_structure_image_from_database(smiles: str, width: int = 400, height: i
         encoded = urllib.parse.quote(str(smiles).strip(), safe="")
         url = (
             f"https://cactus.nci.nih.gov/chemical/structure/{encoded}/image"
-            f"?width={width}&height={height}&format=png"
+            f"?width={int(width)}&height={int(height)}&format=png"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "MechBBB-ML-GUI/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -263,19 +274,23 @@ def resolve_structure_preview(
     height: Optional[int] = None,
 ) -> Optional[bytes]:
     """
-    Primary: local RDKit Cairo. Fallback: NCI CACTUS for canonical/standardized SMILES.
+    Primary: local RDKit Cairo. Fallback: high-res NCI CACTUS for canonical SMILES.
     Returns None if both fail (caller shows nonfatal 'Structure preview unavailable').
+    CACTUS always requests CACTUS_FETCH_WIDTH×CACTUS_FETCH_HEIGHT; display width is separate.
     """
+    del width, height  # display size is handled by st.image(width=PREVIEW_DISPLAY_WIDTH)
     smiles_str = (smiles or "").strip()
     if not smiles_str:
         return None
     mol = get_mol_for_drawing(smiles_str)
-    img = render_ligand_structure(mol, size=size) if mol is not None else None
+    # Prefer slightly sharper native canvas when Cairo is available
+    native_size = max(int(size), PREVIEW_DISPLAY_WIDTH, 400)
+    img = render_ligand_structure(mol, size=native_size) if mol is not None else None
     if img is not None:
         return img
-    w = width if width is not None else size
-    h = height if height is not None else int(size * 0.78)
-    return fetch_structure_image_from_database(smiles_str, width=w, height=h)
+    return fetch_structure_image_from_database(
+        smiles_str, width=CACTUS_FETCH_WIDTH, height=CACTUS_FETCH_HEIGHT
+    )
 
 
 CUSTOM_CSS = """
@@ -814,7 +829,7 @@ def render_mechbbb_prediction_page():
         with ligand_preview_slot.container():
             _, preview_col, _ = st.columns([0.25, 1, 0.25])
             with preview_col:
-                st.image(io.BytesIO(preview_img), width=560)
+                st.image(io.BytesIO(preview_img), width=PREVIEW_DISPLAY_WIDTH)
                 st.caption(
                     "Latest ligand preview"
                     + (f" · SMILES: `{preview_smiles}`" if preview_smiles else "")
@@ -961,14 +976,14 @@ def render_mechbbb_prediction_page():
 
                     # 2D ligand preview always from canonical SMILES; drawing failure must not affect prediction.
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
-                    img_bytes = resolve_structure_preview(smiles_for_lookup, size=400, width=560, height=440)
+                    img_bytes = resolve_structure_preview(smiles_for_lookup, size=400)
                     if img_bytes:
                         st.session_state.last_ligand_image = img_bytes
                         st.session_state.last_ligand_smiles = result.canonical_smiles
                         with ligand_preview_slot.container():
                             _, preview_col, _ = st.columns([0.25, 1, 0.25])
                             with preview_col:
-                                st.image(io.BytesIO(img_bytes), width=560)
+                                st.image(io.BytesIO(img_bytes), width=PREVIEW_DISPLAY_WIDTH)
                                 st.caption(
                                     "Latest ligand preview"
                                     + (
@@ -1114,9 +1129,9 @@ def render_demo_prediction_page():
     ):
         with col:
             st.caption(f"{title}")
-            img_sel = resolve_structure_preview(smi, size=320, width=320, height=250)
+            img_sel = resolve_structure_preview(smi, size=400)
             if img_sel:
-                st.image(io.BytesIO(img_sel), use_container_width=True)
+                st.image(io.BytesIO(img_sel), width=PREVIEW_DISPLAY_WIDTH)
             elif smi:
                 st.caption("Structure preview unavailable")
             else:
@@ -1166,7 +1181,7 @@ def render_demo_prediction_page():
                         st.image(
                             io.BytesIO(img_demo),
                             caption="Ligand structure (2D)",
-                            use_container_width=True,
+                            width=PREVIEW_DISPLAY_WIDTH,
                         )
                     else:
                         st.caption("Structure preview unavailable (prediction unaffected).")
