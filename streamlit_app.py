@@ -1,6 +1,8 @@
 """
 MechBBB-ML Streamlit GUI. Two-stage mechanistically augmented BBB permeability classifier (Model C).
 
+Merged revision deployment: historical UI + frozen revision Model C inference.
+
 Run from this folder (project root):
   streamlit run streamlit_app.py
 """
@@ -27,8 +29,14 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.Draw import rdMolDraw2D
 
-from src.mechbbb.predict import predict_single, predict_batch, load_predictor
-from similarity_module import compute_similarity, similarity_flag, compute_morgan
+from src.mechbbb.predict import (
+    predict_single,
+    predict_batch,
+    load_predictor,
+    PRIMARY_THRESHOLD,
+    HIGH_SENS_THRESHOLD,
+    HIGH_SPEC_THRESHOLD,
+)
 from demo_ligands import CNS_PENETRATING_LIGANDS, NON_CNS_PENETRATING_LIGANDS
 
 
@@ -146,8 +154,8 @@ def get_mol_with_3d(smiles: str, file_content: Optional[bytes] = None, file_exte
 
 def fetch_structure_image_from_database(smiles: str, width: int = 400, height: int = 400) -> Optional[bytes]:
     """
-    Fetch a 2D structure image for the given SMILES from the NCI CACTUS
-    Chemical Identifier Resolver. Returns PNG image bytes or None on failure.
+    Optional fallback: fetch a 2D structure image from NCI CACTUS.
+    Returns PNG image bytes or None on failure. Drawing failure must not affect prediction.
     """
     if not smiles or not str(smiles).strip():
         return None
@@ -230,22 +238,7 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
         return None
 
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-st.set_page_config(
-    page_title="MechBBB-ML - BBB Permeability Studio",
-    page_icon=None,
-    layout="wide",
-    menu_items={
-        "Report a bug": "https://github.com/your-org/mechbbb-gui/issues",
-        "About": "Two-stage mechanistically augmented BBB permeability classifier (Model C).",
-    },
-)
-
-# Inject custom CSS for color palette - blue-teal scale
-st.markdown("""
+CUSTOM_CSS = """
 <style>
     /* Blue-teal palette: light powder -> midnight azure */
     :root {
@@ -544,7 +537,8 @@ st.markdown("""
         background-color: #ffffff;
     }
 </style>
-""", unsafe_allow_html=True)
+"""
+
 
 # ============================================================================
 # PREDICTOR (cached)
@@ -557,36 +551,50 @@ def get_predictor():
 
 @st.cache_resource
 def get_train_fps():
-    """Load training fingerprints for similarity computation."""
-    train_fps_path = HANDOFF_DIR / "artifacts" / "train_fps.npz"
-    if not train_fps_path.exists():
-        # Try alternative location
-        train_fps_path = HANDOFF_DIR / "train_fps.npz"
-    if train_fps_path.exists():
-        return np.load(train_fps_path)["fp"]
+    """Similarity / AD fingerprints are not shipped in this revision deployment."""
     return None
 
 
-def compute_ecfp4_fingerprint(smiles: str) -> Optional[np.ndarray]:
-    """
-    Compute ECFP4 fingerprint (Morgan radius=2, n_bits=2048) for a single SMILES.
-    Returns 1D array of shape (2048,) with dtype uint8 (0/1), or None if invalid.
-    """
-    try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-        arr = np.zeros(2048, dtype=np.uint8)
-        for j in range(2048):
-            if fp.GetBit(j):
-                arr[j] = 1
-        return arr
-    except Exception:
-        return None
+DEFAULT_THRESHOLD = PRIMARY_THRESHOLD
 
 
-DEFAULT_THRESHOLD = 0.35
+def _select_threshold(key_prefix: str = "pred") -> float:
+    """Sidebar radio for primary / high-sens / high-spec / user-adjusted operating points."""
+    st.sidebar.markdown("### Settings")
+    mode = st.sidebar.radio(
+        "Threshold mode",
+        [
+            f"Primary MCC-optimal ({PRIMARY_THRESHOLD})",
+            f"High sensitivity ({HIGH_SENS_THRESHOLD})",
+            f"High specificity ({HIGH_SPEC_THRESHOLD})",
+            "User-adjusted",
+        ],
+        index=0,
+        key=f"{key_prefix}_thr_mode",
+    )
+    if mode.startswith("Primary"):
+        thr = PRIMARY_THRESHOLD
+    elif mode.startswith("High sensitivity"):
+        thr = HIGH_SENS_THRESHOLD
+    elif mode.startswith("High specificity"):
+        thr = HIGH_SPEC_THRESHOLD
+    else:
+        thr = st.sidebar.slider(
+            "User-adjusted operating point (calibrated P(BBB+))",
+            0.01,
+            0.99,
+            float(PRIMARY_THRESHOLD),
+            0.01,
+            key=f"{key_prefix}_thr_slider",
+        )
+        st.sidebar.info("User-adjusted operating point — not a confidence category.")
+    st.sidebar.info(
+        f"**Active threshold:** `{thr:.2f}` on calibrated P(BBB+).  \n"
+        f"Revision Model C (5 seeds → mean → isotonic).  \n"
+        f"Historical thr 0.35 is **not** the revision MCC-optimal threshold."
+    )
+    return float(thr)
+
 
 # ============================================================================
 # PAGES
@@ -596,15 +604,16 @@ def render_home_page():
     """Render the home/dashboard page."""
     st.title("MechBBB-ML - Blood-Brain Barrier Permeability Studio")
     st.caption(
-        "Two-stage mechanistically augmented BBB permeability classifier (Model C)."
+        "Two-stage mechanistically augmented BBB permeability classifier (revision Model C)."
     )
 
     st.sidebar.markdown("### Project Snapshot")
     st.sidebar.markdown(
-        """
+        f"""
         - **Model focus:** BBB permeability classification (Model C)
         - **Architecture:** Stage-1 (efflux/influx/PAMPA) + Stage-2 (PhysChem+ECFP+mech)
-        - **Threshold:** 0.35 (MCC-optimal on BBBP validation)
+        - **Primary threshold:** {PRIMARY_THRESHOLD} (MCC-optimal on calibrated validation scale)
+        - **Secondary points:** {HIGH_SENS_THRESHOLD} (high sens), {HIGH_SPEC_THRESHOLD} (high spec)
         - **Status:** All pages available
         """
     )
@@ -615,18 +624,19 @@ def render_home_page():
         ## Why this app exists
         Drug discovery teams struggle to predict whether small molecules cross the blood-brain barrier.
         MechBBB-ML (Model C) is a two-stage mechanistically augmented classifier that first predicts
-        auxiliary ADME properties (efflux, influx, PAMPA) and then combines them with physicochemical
+        auxiliary ADME-related scores (efflux, influx, PAMPA) and then combines them with physicochemical
         and fingerprint features to predict BBB permeability. This approach improves both
         external generalization and interpretability.
         """
     )
 
     st.markdown(
-        """
+        f"""
         ### Model highlights
-        - **Stage-1:** LightGBM models trained on auxiliary mechanistic datasets (BBBP excluded) yield p_efflux, p_influx, p_pampa.
-        - **Stage-2:** Model C = PhysChem + ECFP4 + mechanistic probs; ensemble of 5 seeds; threshold 0.35.
-        - **No tuning on external data:** threshold selected on BBBP validation set only.
+        - **Stage-1:** LightGBM models trained on auxiliary mechanistic datasets (BBBP excluded) yield uncalibrated p_efflux, p_influx, p_pampa (model scores, not experimental measurements).
+        - **Stage-2:** Model C = PhysChem + ECFP4 + Stage-1 scores; 5-seed ensemble mean → validation isotonic calibration → calibrated P(BBB+).
+        - **Primary threshold:** {PRIMARY_THRESHOLD} on the calibrated scale (revision MCC-optimal). Historical GUI thr 0.35 is not used.
+        - **No unsupported CI/AD claims:** this build does not ship ensemble ±2×SE confidence intervals or train_fps applicability-domain fingerprints.
         """
     )
 
@@ -635,7 +645,7 @@ def render_home_page():
     st.markdown("## Quick start")
 
     st.info(
-        "**Ready to predict!** Use the **MechBBB-ML Prediction** page in the sidebar to enter SMILES strings or upload a CSV file and get BBB permeability predictions with mechanistic probabilities."
+        "**Ready to predict!** Use the **MechBBB-ML Prediction** page in the sidebar to enter SMILES strings or upload a CSV file and get BBB permeability predictions with Stage-1 scores."
     )
 
     st.markdown(
@@ -644,6 +654,7 @@ def render_home_page():
         ### Navigation
         - **Home:** This overview
         - **Documentation:** Setup, model details, and usage
+        - **Demo Prediction Tool:** Illustrative literature-reported ligands (50 compounds)
         - **MechBBB-ML Prediction:** Run predictions (SMILES, structure files, or Batch CSV)
         """
     )
@@ -668,13 +679,13 @@ def render_home_page():
 def render_documentation_page():
     """Render the documentation page."""
     st.title("Documentation & Runbook")
-    st.caption("Reference material for the MechBBB-ML Model C classifier.")
+    st.caption("Reference material for the MechBBB-ML revision Model C classifier.")
 
     st.markdown(
         """
         ## Purpose
         This application provides a Streamlit interface for the MechBBB-ML two-stage mechanistically augmented
-        BBB permeability classifier (Model C). It supports single SMILES input, structure file upload (SDF, MOL, PDB, PDBQT, MOL2), and batch CSV processing.
+        BBB permeability classifier (revision Model C). It supports single SMILES input, structure file upload (SDF, MOL, PDB, PDBQT, MOL2), and batch CSV processing.
         """
     )
 
@@ -683,18 +694,21 @@ def render_documentation_page():
         ## Repository structure
         ```
         .
-        ├── streamlit_app.py       # Main application
+        ├── streamlit_app.py       # Main application (historical UI)
+        ├── app.py                 # Thin entry that calls streamlit_app.main()
         ├── requirements.txt      # Dependencies
-        ├── src/mechbbb/          # Prediction module
+        ├── src/mechbbb/          # Frozen revision prediction module
         │   ├── predict.py        # predict_single, predict_batch, load_predictor
-        │   └── cli.py            # Command-line interface
-        ├── similarity_module.py  # ECFP4 Tanimoto similarity computation
-        └── artifacts/            # Model artifacts
-            └── train_fps.npz      # Training fingerprints (for applicability domain warnings)
-            ├── stage1_efflux.joblib, stage1_influx.joblib, stage1_pampa.joblib
-            ├── stage2_modelC/    # model_seed0.pkl through model_seed4.pkl
+        │   ├── chem.py
+        │   └── features.py
+        ├── similarity_module.py  # Present for compatibility; AD not enabled
+        ├── demo_ligands.py       # 50 illustrative demo ligands
+        └── artifacts/            # Revision Model C artifacts
+            ├── stage1/           # efflux.joblib, influx.joblib, pampa.joblib
+            ├── stage2_modelC/    # seed0.txt … seed4.txt
+            ├── calibration/      # isotonic_model_C.joblib, locked_threshold_model_C.json
             ├── threshold.json
-            └── feature_config.json
+            └── stage1_train_medians.json
         ```
         """
     )
@@ -702,44 +716,39 @@ def render_documentation_page():
     st.markdown(
         """
         ## Local setup
-        1. Create and activate a virtual environment (conda, venv, or poetry).
+        1. Create and activate a virtual environment (Python 3.10 recommended).
         2. Install dependencies: `pip install -r requirements.txt`.
-        3. Launch the app: `streamlit run streamlit_app.py`.
+        3. Launch the app: `streamlit run streamlit_app.py` (or `streamlit run app.py`).
         4. Streamlit will open at `http://localhost:8501`. Use the sidebar to switch between pages.
         """
     )
 
     st.markdown(
-        """
-        ## Model overview (Model C)
-        - **Stage-1:** LightGBM models on PhysChem + ECFP4 yield p_efflux, p_influx, p_pampa.
-        - **Stage-2:** 5-model ensemble on PhysChem + ECFP4 + mechanistic probs yields P(BBB+).
-        - **Threshold:** 0.35 (MCC-optimal on BBBP validation set).
-        - **Features:** 10 physicochemical descriptors + 2048-bit ECFP4 + 3 mechanistic probabilities = 2061 total.
-        """
-    )
-
-    st.markdown(
-        """
-        ## Uncertainty Quantification
-        The model provides uncertainty estimates for each prediction:
-        - **Standard Error:** Calculated from the variance across the 5-model ensemble (std_dev / √5).
-        - **95% Confidence Interval:** P(BBB+) ± 2×SE, providing a range within which the true probability likely falls.
-        - **Display:** Single predictions show the error range and confidence interval. Batch CSV outputs include columns for standard error, error percentage, and CI bounds.
+        f"""
+        ## Model overview (revision Model C)
+        - **Stage-1:** LightGBM models on PhysChem + ECFP4 yield uncalibrated p_efflux, p_influx, p_pampa.
+        - **Stage-2:** 5-model ensemble on PhysChem + ECFP4 + Stage-1 scores → ensemble mean → isotonic → calibrated P(BBB+).
+        - **Primary threshold:** {PRIMARY_THRESHOLD} (MCC-optimal on BBBP validation, calibrated scale).
+        - **Secondary locked points:** {HIGH_SENS_THRESHOLD} (high sensitivity), {HIGH_SPEC_THRESHOLD} (high specificity).
+        - **Features:** 10 physicochemical descriptors + 2048-bit ECFP4 + 3 Stage-1 scores = 2061 total.
+        - Historical thr **0.35 is not** the revision MCC-optimal threshold.
         """
     )
 
     st.markdown(
         """
-        ## CLI usage
-        From the project folder:
-        ```bash
-        python -m src.mechbbb.cli --smiles "CCO" "c1ccccc1" --output out.csv
-        python -m src.mechbbb.cli --input example_inputs.csv --output out.csv
-        ```
-        Output columns: smiles, canonical_smiles, prob_BBB+, prob_std_error, prob_std_error_pct, prob_CI_lower, prob_CI_upper, BBB_class, p_efflux, p_influx, p_pampa, threshold, error, max_similarity, similarity_flag.
-        
-        **Applicability Domain Warning:** The GUI computes the maximum ECFP4 Tanimoto similarity between each query molecule and the BBBP training set fingerprints. A warning is displayed when the maximum similarity is below 0.30, indicating limited similarity to the training chemistry under this fingerprint metric. This requires `artifacts/train_fps.npz` to be present (see artifact_requirements.md for how to generate it).
+        ## What this build does **not** claim
+        - **No ±2×SE confidence intervals** from ensemble seed variance (not a validated uncertainty method in this deployment).
+        - **No applicability-domain / train_fps similarity warnings** (`train_fps.npz` is not shipped; `get_train_fps()` returns None).
+        - Stage-1 scores are **uncalibrated model outputs**, not experimental transporter or PAMPA measurements.
+        """
+    )
+
+    st.markdown(
+        """
+        ## Batch CSV outputs
+        Columns include: is_valid, canonical_smiles, inchikey, prob_calibrated, prob_raw, BBB_class, threshold,
+        p_efflux, p_influx, p_pampa, error. No CI columns.
         """
     )
 
@@ -751,8 +760,8 @@ def render_mechbbb_prediction_page():
     st.title("BBB Permeability Prediction")
     st.markdown(
         """
-        Predict BBB permeability using MechBBB-ML (Model C). Enter a SMILES string, upload a structure file (SDF, MOL, PDB, PDBQT, MOL2), or upload a CSV file for batch processing.
-        The model outputs P(BBB+), mechanistic probabilities (p_efflux, p_influx, p_pampa), and classification.
+        Predict BBB permeability using MechBBB-ML (revision Model C). Enter a SMILES string, upload a structure file (SDF, MOL, PDB, PDBQT, MOL2), or upload a CSV file for batch processing.
+        The model outputs calibrated P(BBB+), raw ensemble mean, Stage-1 scores (uncalibrated), and classification at the selected threshold.
         
         **Input modes:** Single SMILES or structure file | Batch (CSV with smiles/SMILES column)
         """
@@ -778,21 +787,16 @@ def render_mechbbb_prediction_page():
     except Exception as e:
         st.error(f"Could not load model: {e}")
         st.info(
-            "Ensure the **artifacts/** folder contains:\n"
-            "- stage1_efflux.joblib, stage1_influx.joblib, stage1_pampa.joblib\n"
-            "- stage2_modelC/ with model_seed0.pkl through model_seed4.pkl\n"
-            "- threshold.json\n"
-            "- train_fps.npz (for applicability domain warnings; see artifact_requirements.md)"
+            "Ensure the **artifacts/** folder contains revision Model C files:\n"
+            "- artifacts/stage1/efflux.joblib, influx.joblib, pampa.joblib\n"
+            "- artifacts/stage2_modelC/seed0.txt … seed4.txt\n"
+            "- artifacts/calibration/isotonic_model_C.joblib\n"
+            "- artifacts/threshold.json\n"
+            "(Historical names such as stage1_efflux.joblib or model_seed*.pkl are not used.)"
         )
         return
 
-    st.sidebar.markdown("### Settings")
-    threshold = st.sidebar.slider(
-        "Classification threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01
-    )
-    st.sidebar.info(
-        "**MechBBB-ML (Model C)** Default threshold 0.35 = MCC-optimal on BBBP validation."
-    )
+    threshold = _select_threshold("pred")
 
     st.divider()
 
@@ -823,7 +827,6 @@ def render_mechbbb_prediction_page():
             extracted = extract_smiles_from_file(content, ext)
             if extracted:
                 smiles_to_use = extracted
-                # Store for 3D viewer only (2D depiction always uses canonical SMILES)
                 st.session_state.structure_file_content = content
                 st.session_state.structure_file_ext = ext
                 st.success(f"Extracted SMILES from {structure_file.name}")
@@ -832,8 +835,6 @@ def render_mechbbb_prediction_page():
                 st.session_state.structure_file_ext = None
                 st.error(f"Could not extract SMILES from {ext.upper()} file. Try SMILES input instead.")
         else:
-            # Non-file path (typed SMILES / cleared uploader): drop stale upload
-            # state so a prior PDB/MOL2 never contaminates the next molecule.
             st.session_state.structure_file_content = None
             st.session_state.structure_file_ext = None
             if smiles_input and smiles_input.strip():
@@ -847,19 +848,14 @@ def render_mechbbb_prediction_page():
                 )
                 if result.is_valid:
                     st.success("Valid SMILES")
-                    col1, col2, col3 = st.columns(3)
-                    ci_text = "Not available"
-                    if result.prob_std_error is not None:
-                        ci_lower = max(0.0, result.prob - 2 * result.prob_std_error)
-                        ci_upper = min(1.0, result.prob + 2 * result.prob_std_error)
-                        ci_text = f"[{ci_lower:.4f}, {ci_upper:.4f}]"
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.markdown(
                             f"""
                             <div class="result-panel">
-                                <div class="result-title">P(BBB+)</div>
+                                <div class="result-title">Calibrated P(BBB+)</div>
                                 <div class="result-value">{result.prob:.4f}</div>
-                                <div class="result-subtext">95% CI: {ci_text}</div>
+                                <div class="result-subtext">Isotonic on ensemble mean</div>
                             </div>
                             """,
                             unsafe_allow_html=True,
@@ -868,9 +864,9 @@ def render_mechbbb_prediction_page():
                         st.markdown(
                             f"""
                             <div class="result-panel">
-                                <div class="result-title">Prediction</div>
-                                <div class="result-value">{result.bbb_class}</div>
-                                <div class="result-subtext">Threshold-adjusted classification</div>
+                                <div class="result-title">Raw ensemble mean</div>
+                                <div class="result-value">{result.prob_raw:.4f}</div>
+                                <div class="result-subtext">Mean of 5 Stage-2 seeds</div>
                             </div>
                             """,
                             unsafe_allow_html=True,
@@ -879,39 +875,35 @@ def render_mechbbb_prediction_page():
                         st.markdown(
                             f"""
                             <div class="result-panel">
-                                <div class="result-title">Threshold</div>
-                                <div class="result-value">{threshold:.2f}</div>
-                                <div class="result-subtext">Current decision cutoff</div>
+                                <div class="result-title">Prediction</div>
+                                <div class="result-value">{result.bbb_class}</div>
+                                <div class="result-subtext">Class at selected threshold</div>
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
-                    st.progress(float(result.prob), text=f"BBB permeability confidence: {result.prob:.1%}")
-
-                    # Display confidence interval details
-                    if result.prob_std_error is not None:
+                    with col4:
                         st.markdown(
-                            '<div class="section-heading-compact">Uncertainty Analysis</div>',
+                            f"""
+                            <div class="result-panel">
+                                <div class="result-title">Threshold</div>
+                                <div class="result-value">{result.threshold:.2f}</div>
+                                <div class="result-subtext">Active decision cutoff</div>
+                            </div>
+                            """,
                             unsafe_allow_html=True,
                         )
-                        err_col1, err_col2, err_col3 = st.columns(3)
-                        with err_col1:
-                            error_pct = result.prob_std_error * 100
-                            st.metric("Standard Error", f"± {error_pct:.2f}%")
-                        with err_col2:
-                            ci_lower = max(0.0, result.prob - 2 * result.prob_std_error)
-                            st.metric("95% CI Lower", f"{ci_lower:.4f}")
-                        with err_col3:
-                            ci_upper = min(1.0, result.prob + 2 * result.prob_std_error)
-                            st.metric("95% CI Upper", f"{ci_upper:.4f}")
-                        st.info(
-                            f"**Prediction Range:** P(BBB+) = {result.prob:.4f} ± {result.prob_std_error:.4f} "
-                            f"(95% confidence interval: [{ci_lower:.4f}, {ci_upper:.4f}])"
-                        )
+                    st.progress(float(result.prob), text=f"Calibrated P(BBB+): {result.prob:.1%}")
+                    st.caption(
+                        f"InChIKey: `{result.inchikey}` · Canonical SMILES: `{result.canonical_smiles}`"
+                    )
 
                     st.markdown(
-                        '<div class="section-heading-compact">Mechanistic Probabilities</div>',
+                        '<div class="section-heading-compact">Stage-1 scores (uncalibrated model outputs)</div>',
                         unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        "These are uncalibrated Stage-1 model scores (not experimental efflux/influx/PAMPA measurements)."
                     )
                     mcol1, mcol2, mcol3 = st.columns(3)
                     with mcol1:
@@ -924,31 +916,10 @@ def render_mechbbb_prediction_page():
                         st.metric("p_pampa", f"{result.p_pampa:.4f}")
                         st.progress(float(result.p_pampa))
 
-                    # Applicability domain: ECFP4 Tanimoto similarity to training set
-                    train_fps = get_train_fps()
-                    if train_fps is not None:
-                        query_fp = compute_ecfp4_fingerprint(result.canonical_smiles)
-                        if query_fp is not None:
-                            max_similarity = compute_similarity(query_fp, train_fps)
-                            sim_flag = similarity_flag(max_similarity)
-                            
-                            st.subheader("Applicability Domain")
-                            simcol1, simcol2 = st.columns(2)
-                            with simcol1:
-                                st.metric("Max Similarity (ECFP4 Tanimoto)", f"{max_similarity:.4f}")
-                            with simcol2:
-                                st.metric("Similarity Flag", sim_flag)
-                            
-                            # Show warning if similarity is low
-                            if sim_flag == "low":
-                                st.warning(
-                                    "⚠️ **Low similarity to training set** (similarity < 0.3). "
-                                    "Predictions may be unreliable for this molecule."
-                                )
-                        else:
-                            st.info("Could not compute fingerprint for similarity analysis.")
+                    # Similarity/AD intentionally disabled (no train_fps.npz).
+                    _ = get_train_fps()
 
-                    # 2D ligand preview always from canonical SMILES (never raw file block).
+                    # 2D ligand preview always from canonical SMILES; drawing failure must not affect prediction.
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
                     mol = get_mol_for_drawing(smiles_for_lookup if smiles_for_lookup else None)
                     img_bytes = render_ligand_structure(mol) if mol else None
@@ -973,6 +944,7 @@ def render_mechbbb_prediction_page():
                         st.warning(
                             "Could not retrieve or draw structure for this molecule."
                             + (f" (SMILES: {result.canonical_smiles})" if result.canonical_smiles else "")
+                            + " Prediction results above are unaffected."
                         )
                 else:
                     st.error(result.error)
@@ -1007,66 +979,24 @@ def render_mechbbb_prediction_page():
                         predictor=predictor,
                     )
                     df_out = df.copy()
-                    df_out["prob_BBB+"] = [r.prob for r in results]
-                    df_out["BBB_class"] = [r.bbb_class for r in results]
-                    # Add standard error columns
-                    df_out["prob_std_error"] = [
-                        f"{r.prob_std_error:.6f}" if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
-                    df_out["prob_std_error_pct"] = [
-                        f"{r.prob_std_error * 100:.2f}%" if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
-                    # Add confidence interval bounds
-                    df_out["prob_CI_lower"] = [
-                        f"{max(0.0, r.prob - 2 * r.prob_std_error):.6f}" 
-                        if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
-                    df_out["prob_CI_upper"] = [
-                        f"{min(1.0, r.prob + 2 * r.prob_std_error):.6f}" 
-                        if r.prob_std_error is not None else "" 
-                        for r in results
-                    ]
+                    df_out["is_valid"] = [r.is_valid for r in results]
+                    df_out["canonical_smiles"] = [r.canonical_smiles for r in results]
+                    df_out["inchikey"] = [r.inchikey for r in results]
+                    df_out["prob_calibrated"] = [r.prob if r.is_valid else None for r in results]
+                    df_out["prob_raw"] = [r.prob_raw if r.is_valid else None for r in results]
+                    df_out["BBB_class"] = [r.bbb_class if r.is_valid else None for r in results]
+                    df_out["threshold"] = [r.threshold for r in results]
                     df_out["p_efflux"] = [r.p_efflux for r in results]
                     df_out["p_influx"] = [r.p_influx for r in results]
                     df_out["p_pampa"] = [r.p_pampa for r in results]
-
-                    # Compute similarity for each result
-                    train_fps = get_train_fps()
-                    if train_fps is not None:
-                        max_similarities = []
-                        similarity_flags = []
-                        for r in results:
-                            if r.is_valid and r.canonical_smiles:
-                                query_fp = compute_ecfp4_fingerprint(r.canonical_smiles)
-                                if query_fp is not None:
-                                    max_sim = compute_similarity(query_fp, train_fps)
-                                    max_similarities.append(max_sim)
-                                    similarity_flags.append(similarity_flag(max_sim))
-                                else:
-                                    max_similarities.append(None)
-                                    similarity_flags.append("")
-                            else:
-                                max_similarities.append(None)
-                                similarity_flags.append("")
-                        
-                        df_out["max_similarity"] = [
-                            f"{s:.4f}" if s is not None else "" for s in max_similarities
-                        ]
-                        df_out["similarity_flag"] = similarity_flags
-                        
-                        # Show summary warning if any molecules have low similarity
-                        low_sim_count = sum(1 for flag in similarity_flags if flag == "low")
-                        if low_sim_count > 0:
-                            st.warning(
-                                f"⚠️ **{low_sim_count} molecule(s) have low similarity to training set** "
-                                "(similarity < 0.3). Predictions may be unreliable."
-                            )
+                    df_out["error"] = [r.error for r in results]
 
                     st.subheader("Results")
                     st.dataframe(df_out, use_container_width=True)
+                    st.caption(
+                        "Stage-1 columns (p_efflux/p_influx/p_pampa) are uncalibrated model outputs, not experimental values. "
+                        "No CI / similarity columns in this revision build."
+                    )
 
                     st.subheader("Download results")
                     st.download_button(
@@ -1083,16 +1013,16 @@ def render_mechbbb_prediction_page():
 
 
 def render_demo_prediction_page():
-    """Render the Demo Prediction Tool page with known CNS+ and CNS- ligands."""
+    """Render the Demo Prediction Tool page with illustrative CNS+/CNS− ligands."""
     st.title("Demo Prediction Tool")
     st.markdown(
         """
-        Run predictions on **25 known CNS-penetrating (BBB+)** and **25 known non-CNS-penetrating (BBB−)** ligands.
-        Select a ligand from each dropdown and click **Predict** to compare model predictions with the expected classification.
+        Run predictions on **25 illustrative CNS-penetrating (CNS+)** and **25 illustrative non-CNS-penetrating (CNS−)** ligands.
+        Labels are literature-reported / illustrative and **not independently verified** for this release.
+        Predictions use **revision Model C** (calibrated P(BBB+) at the selected operating point).
         """
     )
 
-    # Sanity guard: never silently accept a demo SMILES RDKit cannot parse.
     bad_demo = validate_demo_ligands()
     if bad_demo:
         names = ", ".join(n for n, _ in bad_demo)
@@ -1101,7 +1031,6 @@ def render_demo_prediction_page():
             "Fix demo_ligands.py before trusting structures on this page."
         )
 
-    # Demo selection never uses an uploaded structure file.
     st.session_state.structure_file_content = None
     st.session_state.structure_file_ext = None
 
@@ -1110,30 +1039,28 @@ def render_demo_prediction_page():
     except Exception as e:
         st.error(f"Could not load model: {e}")
         st.info(
-            "Ensure the **artifacts/** folder contains the model files (see Documentation)."
+            "Ensure **artifacts/** contains revision Model C files "
+            "(stage1/*.joblib, stage2_modelC/seed*.txt, calibration/isotonic_model_C.joblib)."
         )
         return
 
-    threshold = st.sidebar.slider(
-        "Classification threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01,
-        key="demo_threshold",
-    )
+    threshold = _select_threshold("demo")
 
-    st.subheader("CNS-penetrating ligands (BBB+)")
+    st.subheader("CNS-penetrating ligands (CNS+)")
     cns_plus_labels = [f"{name}" for name, _ in CNS_PENETRATING_LIGANDS]
     cns_plus_map = {name: smi for name, smi in CNS_PENETRATING_LIGANDS}
     selected_cns_plus = st.selectbox(
-        "Select a known CNS-penetrating ligand",
+        "Select an illustrative CNS-penetrating ligand",
         options=cns_plus_labels,
         key="demo_cns_plus",
     )
     smiles_cns_plus = cns_plus_map.get(selected_cns_plus, "")
 
-    st.subheader("Non-CNS-penetrating ligands (BBB−)")
+    st.subheader("Non-CNS-penetrating ligands (CNS−)")
     cns_minus_labels = [f"{name}" for name, _ in NON_CNS_PENETRATING_LIGANDS]
     cns_minus_map = {name: smi for name, smi in NON_CNS_PENETRATING_LIGANDS}
     selected_cns_minus = st.selectbox(
-        "Select a known non-CNS-penetrating ligand",
+        "Select an illustrative non-CNS-penetrating ligand",
         options=cns_minus_labels,
         key="demo_cns_minus",
     )
@@ -1174,9 +1101,9 @@ def render_demo_prediction_page():
     if st.button("Predict", type="primary", key="btn_demo"):
         to_run = []
         if run_for in ("CNS-penetrating ligand only", "Both"):
-            to_run.append((selected_cns_plus, smiles_cns_plus, "CNS+ (expected BBB+)"))
+            to_run.append((selected_cns_plus, smiles_cns_plus, "CNS+ (illustrative label)"))
         if run_for in ("Non-CNS-penetrating ligand only", "Both"):
-            to_run.append((selected_cns_minus, smiles_cns_minus, "CNS− (expected BBB−)"))
+            to_run.append((selected_cns_minus, smiles_cns_minus, "CNS− (illustrative label)"))
 
         for label, smiles, expected in to_run:
             st.markdown(f"#### {label} — {expected}")
@@ -1184,14 +1111,20 @@ def render_demo_prediction_page():
             if result.is_valid:
                 res_left, res_right = st.columns([1.1, 1])
                 with res_left:
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("P(BBB+)", f"{result.prob:.4f}")
+                        st.metric("Calibrated P(BBB+)", f"{result.prob:.4f}")
                     with col2:
-                        st.metric("Prediction", result.bbb_class)
+                        st.metric("Raw ensemble mean", f"{result.prob_raw:.4f}")
                     with col3:
-                        st.metric("Threshold", f"{threshold:.2f}")
+                        st.metric("Prediction", result.bbb_class)
+                    with col4:
+                        st.metric("Threshold", f"{result.threshold:.2f}")
                     st.caption(f"SMILES: `{smiles}`")
+                    st.caption(
+                        f"Stage-1 (uncalibrated): p_efflux={result.p_efflux:.4f}, "
+                        f"p_influx={result.p_influx:.4f}, p_pampa={result.p_pampa:.4f}"
+                    )
                 smiles_for_demo = (result.canonical_smiles or result.smiles or smiles or "").strip()
                 mol_demo = get_mol_for_drawing(smiles_for_demo if smiles_for_demo else None)
                 img_demo = render_ligand_structure(mol_demo, size=400) if mol_demo else None
@@ -1205,27 +1138,14 @@ def render_demo_prediction_page():
                             use_container_width=True,
                         )
                     else:
-                        st.caption("Structure image unavailable.")
-                # Similarity if available
-                train_fps = get_train_fps()
-                if train_fps is not None:
-                    query_fp = compute_ecfp4_fingerprint(result.canonical_smiles)
-                    if query_fp is not None:
-                        max_sim = compute_similarity(query_fp, train_fps)
-                        sim_flag = similarity_flag(max_sim)
-                        st.metric("Max Similarity (ECFP4 Tanimoto)", f"{max_sim:.4f}")
-                        st.metric("Similarity Flag", sim_flag)
-                        if sim_flag == "low":
-                            st.warning(
-                                "⚠️ **Low similarity to training set** (similarity < 0.3). "
-                                "Predictions may be unreliable for this molecule."
-                            )
+                        st.caption("Structure image unavailable (prediction unaffected).")
             else:
                 st.error(result.error)
             st.divider()
 
     st.caption(
-        "MechBBB-ML (Model C). Demo ligands are from literature/PubChem/ChEMBL as known BBB+ or BBB−."
+        "Demo ligands are illustrative / literature-reported labels and are not independently verified. "
+        "Predictions use revision Model C. Similarity / AD warnings are disabled in this build."
     )
 
 
@@ -1238,12 +1158,21 @@ _MAIN_RENDERED = False
 
 def main():
     """Main app entry point with navigation."""
-    # Prevent the navigation widgets from being registered twice if this
-    # entry point is accidentally called more than once in a single script run.
     global _MAIN_RENDERED
     if _MAIN_RENDERED:
         return
     _MAIN_RENDERED = True
+
+    st.set_page_config(
+        page_title="MechBBB-ML - BBB Permeability Studio",
+        page_icon=None,
+        layout="wide",
+        menu_items={
+            "Report a bug": "https://github.com/your-org/mechbbb-gui/issues",
+            "About": "Two-stage mechanistically augmented BBB permeability classifier (revision Model C).",
+        },
+    )
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
     if "current_page" not in st.session_state:
         st.session_state.current_page = "Home"

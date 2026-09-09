@@ -1,7 +1,7 @@
-rdkit>=2025.9.6
-lightgbm>=4.0
-pandas>=1.5
-numpy>=1.22
-streamlit>=1.28
-scikit-learn==1.7.2
+streamlit>=1.28,<1.40
+numpy>=1.23,<2.1
+pandas>=1.5,<2.3
+scikit-learn>=1.2,<1.6
+lightgbm>=3.3,<4.6
+rdkit>=2022.9.1
 joblib>=1.2

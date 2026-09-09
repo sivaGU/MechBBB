@@ -1,0 +1,7 @@
+{
+  "p_efflux": 0.396630553345084,
+  "p_influx": 0.0973444295171783,
+  "p_pampa": 0.8446839961072456,
+  "source": "BBBP scaffold train n=1365 from bbbp_mechanistic_probs_final_refit_v3.csv",
+  "note": "Contingency only; final_refit scores had 0 missing on BBBP"
+}

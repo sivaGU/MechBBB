@@ -1,4 +1,9 @@
 {
-  "threshold": 0.35,
-  "note": "MCC-optimal on BBBP validation set"
+  "threshold": 0.51,
+  "probability_scale": "isotonic_calibrated_ensemble_mean",
+  "secondary": {
+    "high_sensitivity": 0.81,
+    "high_specificity": 0.92
+  },
+  "note": "Revision locked Model C operating points; not historical 0.35"
 }

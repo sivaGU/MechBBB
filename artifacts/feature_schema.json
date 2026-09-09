@@ -1,0 +1,27 @@
+{
+  "n_features_stage1": 2058,
+  "n_features_model_c": 2061,
+  "physchem_order": [
+    "MolWt",
+    "TPSA",
+    "MolLogP",
+    "NumHDonors",
+    "NumHAcceptors",
+    "NumRotatableBonds",
+    "RingCount",
+    "HeavyAtomCount",
+    "FractionCSP3",
+    "NumAromaticRings"
+  ],
+  "ecfp4": {
+    "radius": 2,
+    "n_bits": 2048
+  },
+  "mech_tail": [
+    "p_efflux",
+    "p_influx",
+    "p_pampa"
+  ],
+  "calibration_order": "mean_of_seed_predict_THEN_isotonic",
+  "primary_threshold": 0.51
+}

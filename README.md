@@ -1,104 +1,45 @@
-# MechBBB - Two-Stage Mechanistically Augmented BBB Permeability Classifier (Model C)
+# MechBBB merged Streamlit deployment
 
-A production-ready Streamlit GUI for predicting Blood-Brain Barrier (BBB) permeability using the validated **MechBBB Model C** two-stage ensemble.
+Python **3.10** recommended (`runtime.txt`: python-3.10.14).
 
-Link: [https://mechbbb.streamlit.app/](https://mechbbb-jrhrsxh5xwenfpyb8cveqr.streamlit.app/)
-
-## Features
-
-- **Single SMILES prediction** — Type a SMILES string and get BBB permeability + mechanistic probabilities
-- **Batch CSV prediction** — Upload a CSV with a SMILES column, download results
-- **Two-stage Model C** — Stage-1: efflux/influx/PAMPA; Stage-2: PhysChem + ECFP4 + mechanistic probs
-- **Adjustable threshold** — Default 0.35 (MCC-optimal on BBBP validation)
-
-## Quick Start
-
-### 1. Create and activate a virtual environment
+## Local launch
 
 ```bash
-python -m venv venv
-```
-
-- **Windows:** `venv\Scripts\activate`
-- **Mac/Linux:** `source venv/bin/activate`
-
-### 2. Install dependencies
-
-```bash
+cd MechBBB_Streamlit_Deployment
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+# source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-If RDKit fails, try:
-```bash
-pip install rdkit
-pip install lightgbm pandas numpy streamlit scikit-learn joblib
-```
-
-### 3. Run the Streamlit GUI
-
-```bash
 streamlit run streamlit_app.py
 ```
 
-The app will open at `http://localhost:8501`.
-
-## Project Structure
-
-```
-.
-├── streamlit_app.py       # MechBBB GUI
-├── requirements.txt       # Dependencies
-├── src/
-│   └── mechbbb/           # Prediction module
-│       ├── predict.py     # predict_single, predict_batch, load_predictor
-│       └── cli.py         # Command-line interface
-├── artifacts/             # Model artifacts
-│   ├── stage1_efflux.joblib
-│   ├── stage1_influx.joblib
-│   ├── stage1_pampa.joblib
-│   ├── stage2_modelC/     # model_seed0.pkl … model_seed4.pkl
-│   ├── threshold.json
-│   └── feature_config.json
-├── example_inputs.csv
-├── example_outputs.csv
-└── PROCEDURES_FOR_FRIEND.md
-```
-
-## Usage
-
-### GUI
-
-- **Single SMILES:** Enter e.g. `CCO` or `c1ccccc1`, click **Predict**
-- **Batch CSV:** Upload a CSV with a column named `smiles` or `SMILES`, click **Predict batch**, then **Download CSV**
-
-### CLI
-
-From the project root:
+Equivalent entrypoint:
 
 ```bash
-# Predict a few SMILES
-python -m src.mechbbb.cli --smiles "CCO" "c1ccccc1" --output out.csv
-
-# Predict from CSV
-python -m src.mechbbb.cli --input example_inputs.csv --output out.csv
+streamlit run app.py
 ```
 
-## Model Details
+Open `http://localhost:8501`. Sidebar: Home / Documentation / Demo Prediction Tool / MechBBB-ML Prediction.
 
-- **Stage-1:** LightGBM models on PhysChem + ECFP4 → p_efflux, p_influx, p_pampa
-- **Stage-2:** 5-model ensemble on PhysChem + ECFP4 + mechanistic probs → P(BBB+)
-- **Threshold:** 0.35 (MCC-optimal on BBBP validation)
+## Streamlit Cloud
 
-## Requirements
+1. Push this folder as the app root (or set the Cloud app root to `MechBBB_Streamlit_Deployment`).
+2. Main file: `streamlit_app.py` (or `app.py`).
+3. Python version: 3.10 (see `runtime.txt`).
+4. Dependencies: `requirements.txt`. System packages: `packages.txt` if needed for RDKit builds.
 
-- Python 3.9 or 3.10 (3.11/3.12 usually work)
-- Dependencies in `requirements.txt`
+## Model (revision Model C)
 
-## Contact
+- Stage1 → 2061 features → 5 Stage2 seeds → mean → isotonic → calibrated P(BBB+)
+- Primary threshold **0.51**; secondary **0.81** / **0.92**
+- Artifacts under `artifacts/` (not historical `stage1_efflux.joblib` / `model_seed*.pkl`)
+- No train_fps AD; no ±2×SE CI in this build
 
-Dr. Sivanesan Dakshanamurthy — sd233@georgetown.edu
+## Tests
 
-
-
-
-
+```bash
+cd MechBBB_Streamlit_Deployment
+python -m pytest tests/test_inference.py -q
+```

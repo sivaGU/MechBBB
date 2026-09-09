@@ -1,0 +1,42 @@
+{
+  "model": "C",
+  "mcc_optimal": {
+    "threshold": 0.51,
+    "mcc": 0.7139965828304995,
+    "sensitivity": 0.9495798319327731,
+    "specificity": 0.7592592592592593,
+    "balanced_accuracy": 0.8544195455960162,
+    "tp": 226,
+    "tn": 41,
+    "fp": 13,
+    "fn": 12
+  },
+  "tie_break": "max MCC; then max sensitivity; then lower threshold",
+  "grid": "0.01..0.99 step 0.01",
+  "probability_scale": "isotonic_calibrated_ensemble_mean",
+  "legacy_raw_thresholds_0.15_0.28_0.35_reused": false,
+  "high_sensitivity": {
+    "threshold": 0.81,
+    "mcc": 0.6722604064809599,
+    "sensitivity": 0.9159663865546218,
+    "specificity": 0.7962962962962963,
+    "balanced_accuracy": 0.856131341425459,
+    "tp": 218,
+    "tn": 43,
+    "fp": 11,
+    "fn": 20,
+    "rule": "max_spec_subject_to_sens_ge_0.9"
+  },
+  "high_specificity": {
+    "threshold": 0.92,
+    "mcc": 0.4155708000850817,
+    "sensitivity": 0.5714285714285714,
+    "specificity": 0.9629629629629629,
+    "balanced_accuracy": 0.7671957671957672,
+    "tp": 136,
+    "tn": 52,
+    "fp": 2,
+    "fn": 102,
+    "rule": "max_sens_subject_to_spec_ge_0.9"
+  }
+}
