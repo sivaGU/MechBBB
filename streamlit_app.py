@@ -27,7 +27,18 @@ import pandas as pd
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
-from rdkit.Chem.Draw import rdMolDraw2D
+
+# Native Cairo drawing needs libXrender on Linux. Streamlit Cloud APT may be broken;
+# keep this import optional so the app can start and still run predictions.
+try:
+    from rdkit.Chem.Draw import rdMolDraw2D as _rdMolDraw2D
+except Exception as _draw_import_err:  # ImportError or OSError (missing .so)
+    _rdMolDraw2D = None
+    logging.warning(
+        "RDKit Cairo drawing unavailable (%s). "
+        "Structure preview will use CACTUS fallback or show a nonfatal message.",
+        _draw_import_err,
+    )
 
 from src.mechbbb.predict import (
     predict_single,
@@ -208,16 +219,22 @@ def validate_demo_ligands() -> list:
     return bad
 
 
+def native_rdkit_drawing_available() -> bool:
+    """True when rdMolDraw2D (Cairo) imported successfully (needs libXrender on Linux)."""
+    return _rdMolDraw2D is not None
+
+
 def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
     """
-    Draw the ligand as a 2D chemical structure (atoms and bonds) using RDKit.
-    Returns PNG image bytes or None on failure. Used as fallback when database lookup fails.
+    Draw the ligand as a 2D chemical structure using RDKit Cairo when available.
+    Returns PNG bytes or None. Original drawing path retained for when system libs return.
+    Prediction must never depend on this function.
     """
-    if mol is None:
+    if mol is None or _rdMolDraw2D is None:
         return None
     try:
         draw_size = max(300, int(size))
-        drawer = rdMolDraw2D.MolDraw2DCairo(draw_size, int(draw_size * 0.78))
+        drawer = _rdMolDraw2D.MolDraw2DCairo(draw_size, int(draw_size * 0.78))
         opts = drawer.drawOptions()
         opts.bondLineWidth = 3.0
         opts.padding = 0.02
@@ -231,11 +248,34 @@ def render_ligand_structure(mol, size: int = 400) -> Optional[bytes]:
             draw_mol.RemoveAllConformers()
         AllChem.Compute2DCoords(draw_mol)
 
-        rdMolDraw2D.PrepareAndDrawMolecule(drawer, draw_mol)
+        _rdMolDraw2D.PrepareAndDrawMolecule(drawer, draw_mol)
         drawer.FinishDrawing()
         return bytes(drawer.GetDrawingText())
     except Exception:
         return None
+
+
+def resolve_structure_preview(
+    smiles: Optional[str],
+    *,
+    size: int = 400,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> Optional[bytes]:
+    """
+    Primary: local RDKit Cairo. Fallback: NCI CACTUS for canonical/standardized SMILES.
+    Returns None if both fail (caller shows nonfatal 'Structure preview unavailable').
+    """
+    smiles_str = (smiles or "").strip()
+    if not smiles_str:
+        return None
+    mol = get_mol_for_drawing(smiles_str)
+    img = render_ligand_structure(mol, size=size) if mol is not None else None
+    if img is not None:
+        return img
+    w = width if width is not None else size
+    h = height if height is not None else int(size * 0.78)
+    return fetch_structure_image_from_database(smiles_str, width=w, height=h)
 
 
 CUSTOM_CSS = """
@@ -921,10 +961,7 @@ def render_mechbbb_prediction_page():
 
                     # 2D ligand preview always from canonical SMILES; drawing failure must not affect prediction.
                     smiles_for_lookup = (result.canonical_smiles or result.smiles or "").strip()
-                    mol = get_mol_for_drawing(smiles_for_lookup if smiles_for_lookup else None)
-                    img_bytes = render_ligand_structure(mol) if mol else None
-                    if img_bytes is None and smiles_for_lookup:
-                        img_bytes = fetch_structure_image_from_database(smiles_for_lookup)
+                    img_bytes = resolve_structure_preview(smiles_for_lookup, size=400, width=560, height=440)
                     if img_bytes:
                         st.session_state.last_ligand_image = img_bytes
                         st.session_state.last_ligand_smiles = result.canonical_smiles
@@ -941,10 +978,10 @@ def render_mechbbb_prediction_page():
                                     )
                                 )
                     else:
-                        st.warning(
-                            "Could not retrieve or draw structure for this molecule."
-                            + (f" (SMILES: {result.canonical_smiles})" if result.canonical_smiles else "")
-                            + " Prediction results above are unaffected."
+                        st.info(
+                            "Structure preview unavailable"
+                            + (f" (SMILES: `{result.canonical_smiles}`)" if result.canonical_smiles else "")
+                            + ". Prediction results above are unaffected."
                         )
                 else:
                     st.error(result.error)
@@ -1077,14 +1114,11 @@ def render_demo_prediction_page():
     ):
         with col:
             st.caption(f"{title}")
-            mol_sel = get_mol_for_drawing(smi if smi else None)
-            img_sel = render_ligand_structure(mol_sel, size=320) if mol_sel else None
-            if img_sel is None and smi:
-                img_sel = fetch_structure_image_from_database(smi, width=320, height=250)
+            img_sel = resolve_structure_preview(smi, size=320, width=320, height=250)
             if img_sel:
                 st.image(io.BytesIO(img_sel), use_container_width=True)
             elif smi:
-                st.caption("Could not draw structure for this SMILES.")
+                st.caption("Structure preview unavailable")
             else:
                 st.caption("—")
 
@@ -1126,10 +1160,7 @@ def render_demo_prediction_page():
                         f"p_influx={result.p_influx:.4f}, p_pampa={result.p_pampa:.4f}"
                     )
                 smiles_for_demo = (result.canonical_smiles or result.smiles or smiles or "").strip()
-                mol_demo = get_mol_for_drawing(smiles_for_demo if smiles_for_demo else None)
-                img_demo = render_ligand_structure(mol_demo, size=400) if mol_demo else None
-                if img_demo is None and smiles_for_demo:
-                    img_demo = fetch_structure_image_from_database(smiles_for_demo)
+                img_demo = resolve_structure_preview(smiles_for_demo, size=400)
                 with res_right:
                     if img_demo:
                         st.image(
@@ -1138,7 +1169,7 @@ def render_demo_prediction_page():
                             use_container_width=True,
                         )
                     else:
-                        st.caption("Structure image unavailable (prediction unaffected).")
+                        st.caption("Structure preview unavailable (prediction unaffected).")
             else:
                 st.error(result.error)
             st.divider()
