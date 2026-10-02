@@ -913,7 +913,7 @@ def render_home_page():
 
         **MechBBB: A Two-Stage Mechanism-Informed Machine Learning Tool for Blood-Brain Barrier Permeability Prediction.**  
         Yu Shin, Sahith Mada, Sivanesan Dakshanamurthy\\*  
-       Citation :  Shin, Y.; Mada, S.; Dakshanamurthy, S. MechBBB: A Two-Stage Mechanism Informed Machine Learning Tool for Blood Brain Barrier Permeability Prediction. Pharmaceuticals2026, 19, 1524.
+       Citation :  Shin, Y.; Mada, S.; Dakshanamurthy, S. MechBBB: A Two-Stage Mechanism Informed Machine Learning Tool for Blood Brain Barrier Permeability Prediction. Pharmaceuticals. 2026, 19, 1524. (https://doi.org/10.3390/ph19101524)
 
         **For Contact:**  
         Dr. Sivanesan Dakshanamurthy, PhD, MBA  
